@@ -1,0 +1,14 @@
+{
+  "name": "@qy/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "@hiero-ledger/sdk": "2.90.1",
+    "dotenv": "^18.0.9",
+    "viem": "^2.57.16"
+  }
+}

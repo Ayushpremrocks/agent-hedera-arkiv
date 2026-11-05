@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+  - spikes
+allowBuilds:
+  esbuild: true
+  protobufjs: false
