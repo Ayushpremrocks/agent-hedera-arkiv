@@ -6,7 +6,9 @@ export const hashscan = (kind: "transaction" | "token" | "topic" | "account", id
 
 /** Accepts DER (what our setup script writes) or raw 0x/hex ECDSA (what the portal shows). */
 export function parseKey(key: string): PrivateKey {
-  return key.startsWith("30") ? PrivateKey.fromStringDer(key) : PrivateKey.fromStringECDSA(key);
+  // A raw 64-hex key can itself start with "30", so tell DER apart by length too.
+  const der = key.startsWith("30") && key.length > 64;
+  return der ? PrivateKey.fromStringDer(key) : PrivateKey.fromStringECDSA(key);
 }
 
 export function hederaClient(id: string, key: string): Client {
