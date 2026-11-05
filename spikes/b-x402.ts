@@ -29,7 +29,10 @@ const required = await server.createPaymentRequiredResponse(reqs, { url: "spike:
 console.log("402 requirements:", JSON.stringify(required.accepts, null, 1));
 
 const signer = createClientHederaSigner(A.id, parseKey(A.key), { network: "hedera:testnet" });
-const client = new x402Client().register("hedera:*", new ClientScheme(signer));
+const client = new x402Client()
+  .register("hedera:*", new ClientScheme(signer))
+  // HBAR isn't a USD "default asset", so opt in explicitly with a hard per-payment cap.
+  .setSpendControls({ allowedAssets: [{ network: "hedera:testnet", asset: "0.0.0", maxAmountPerPayment: "100000000" }] });
 const payload = await client.createPaymentPayload(required);
 
 const match = server.findMatchingRequirements(reqs, payload);
