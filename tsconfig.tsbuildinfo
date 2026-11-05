@@ -1,0 +1,1 @@
+{"root":["./packages/shared/src/arkiv.test.ts","./packages/shared/src/arkiv.ts","./packages/shared/src/env.ts","./packages/shared/src/hedera.ts","./packages/shared/src/index.ts","./spikes/a-arkiv.ts","./spikes/b-x402.ts","./spikes/c-nft-swap.ts","./spikes/setup-accounts.ts"],"errors":true,"version":"5.9.3"}
