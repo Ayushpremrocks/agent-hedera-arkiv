@@ -26,6 +26,38 @@ async function mirror<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** An account's ECDSA public key (hex) from the Mirror Node. */
+export async function accountKey(id: string): Promise<string> {
+  const a = await mirror<{ key: { _type: string; key: string } | null }>(`/accounts/${id}`);
+  if (a.key?._type !== "ECDSA_SECP256K1") throw new Error(`${id} has no ECDSA key`);
+  return a.key.key;
+}
+
+/** Slot NFT metadata: start time and job hash. Must stay under Hedera's 100-byte limit. */
+export type SlotMeta = { s: number; h: string };
+export const encodeSlot = (m: SlotMeta) => Buffer.from(JSON.stringify(m));
+export const decodeSlot = (b64: string): SlotMeta => JSON.parse(Buffer.from(b64, "base64").toString());
+
+export type MirrorNft = { serial_number: number; account_id: string; metadata: string; deleted: boolean };
+
+/** Every NFT of a token, following Mirror Node pagination. */
+export async function tokenNfts(tokenId: string): Promise<MirrorNft[]> {
+  const out: MirrorNft[] = [];
+  let next: string | null = `/tokens/${tokenId}/nfts?limit=100&order=asc`;
+  while (next) {
+    const page: { nfts: MirrorNft[]; links: { next: string | null } } = await mirror(next.replace("/api/v1", ""));
+    out.push(...page.nfts);
+    next = page.links.next;
+  }
+  return out;
+}
+
+/** Serials of `tokenId` currently held by `account`. */
+export async function ownedSerials(account: string, tokenId: string): Promise<number[]> {
+  const page = await mirror<{ nfts: MirrorNft[] }>(`/accounts/${account}/nfts?token.id=${tokenId}&limit=100`);
+  return page.nfts.map((n) => n.serial_number);
+}
+
 /** Current owner of an NFT according to the Mirror Node (lags consensus by a few seconds). */
 export async function nftOwner(tokenId: string, serial: number): Promise<string> {
   const nft = await mirror<{ account_id: string }>(`/tokens/${tokenId}/nfts/${serial}`);

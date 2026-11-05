@@ -1,0 +1,13 @@
+{
+  "name": "@qy/provider",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "@hiero-ledger/sdk": "2.90.1",
+    "@qy/shared": "workspace:*"
+  }
+}
