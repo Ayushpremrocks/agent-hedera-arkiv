@@ -21,7 +21,7 @@ export function hbarPayer(id: string, key: string, maxTinybars: bigint) {
  * in between, the server re-quotes without settling anything, so pay the new quote (a few times at
  * most; the payer's spend cap still bounds every payment).
  */
-export async function postPaid(url: string, body: unknown, payer?: x402Client, attempts = 3, timeoutMs = 60_000) {
+export async function postPaid(url: string, body: unknown, payer?: x402Client, attempts = 3, timeoutMs = 60_000, payTo?: string) {
   const post = (headers: Record<string, string> = {}) =>
     fetch(url, {
       method: "POST",
@@ -33,7 +33,10 @@ export async function postPaid(url: string, body: unknown, payer?: x402Client, a
   for (let i = 0; i < attempts && res.status === 402 && payer; i++) {
     const required = res.headers.get("payment-required");
     if (!required) break;
-    const payload = await payer.createPaymentPayload(decodePaymentRequiredHeader(required));
+    const terms = decodePaymentRequiredHeader(required);
+    // Paying into escrow is what backs the refund: refuse terms that pay anyone else.
+    if (payTo && terms.accepts.some((a) => a.payTo !== payTo)) throw new Error(`asked to pay ${terms.accepts.map((a) => a.payTo).join(", ")}, not the escrow ${payTo}`);
+    const payload = await payer.createPaymentPayload(terms);
     res = await post({ "payment-signature": encodePaymentSignatureHeader(payload) });
   }
   return { status: res.status, body: (await res.json()) as any };

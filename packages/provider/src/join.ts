@@ -26,6 +26,7 @@ const { values: a } = parseArgs({
     workers: { type: "string", default: "2" },
     port: { type: "string", default: "4000" },
     out: { type: "string", default: ".env.provider" },
+    escrow: { type: "string" },
     force: { type: "boolean", default: false },
   },
 });
@@ -35,6 +36,7 @@ const fail = (msg: string): never => {
 };
 if (!a.account || !/^0\.0\.\d+$/.test(a.account)) fail("--account must be your Hedera testnet account id, like 0.0.1234 (portal.hedera.com gives you one).");
 if (!a.key) fail("--key must be that account's ECDSA private key (HashPack: Settings, Export private key).");
+if (a.escrow && !/^0\.0\.\d+$/.test(a.escrow)) fail("--escrow must be the escrow account id shown on the Sell GPU time page, like 0.0.5678.");
 if (!a.url) fail("--url must be where agents can reach this provider, e.g. http://192.168.1.20:4000 on a LAN or a public tunnel URL.");
 const out = resolve(a.out!);
 if (existsSync(out) && !a.force) fail(`${out} already exists. Use --force to replace it (its treasury account would be abandoned).`);
@@ -87,6 +89,8 @@ writeFileSync(
     `LLM_BASE_URL=${a.llm}`,
     `LLM_MODEL=${a.model}`,
     `X402_FACILITATOR_URL=https://api.testnet.blocky402.com`,
+    `# Bookings are paid into this escrow; it pays you once a ticket starts on time and refunds the buyer otherwise.`,
+    `ESCROW_ID=${a.escrow ?? ""}`,
     `# Optional, for a higher Arkiv rate limit: https://hub.arkiv.network/access-keys`,
     `ARKIV_ACCESS_KEY=`,
     "",
@@ -103,4 +107,5 @@ console.log(
     ? `Arkiv: ${evm} has ${(Number(gas) / 1e18).toFixed(4)} tGLM, enough to announce.`
     : `Arkiv: ${evm} has no tGLM yet. Get some free at https://hub.arkiv.network/faucet before starting.`,
 );
+if (!a.escrow) console.log("No --escrow: you'd take payment directly and owe refunds yourself, and hosted agents only book escrowed providers.");
 console.log(`\nNext:\n  make sure ${a.model} answers at ${a.llm}\n  QY_ENV=${a.out} pnpm provider\n`);

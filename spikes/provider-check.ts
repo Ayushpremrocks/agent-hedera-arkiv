@@ -1,7 +1,7 @@
 // End-to-end check against a running provider with the model up: auth failures, paid booking
 // (x402) into a queue with no mint, the startBy promise and ticket sizes, a reservation with its job
 // attached later, tokenizing with a trade lock, real model jobs, private results and the batched log.
-import { type Job, type LoggedEvent, hbarPayer, hederaClient, jobHash, postPaid, readEvents, role, sha256, signRequest, slotInfo } from "@qy/shared";
+import { type Job, type LoggedEvent, MIRROR, hbarPayer, hederaClient, jobHash, postPaid, readEvents, returnTicket, role, sha256, signRequest, slotInfo, waitForOwner } from "@qy/shared";
 
 const URL = process.env.PROVIDER_URL ?? "http://localhost:4000";
 const A = role("AGENT_A");
@@ -30,6 +30,9 @@ function expect(label: string, ok: boolean, got: unknown = "") {
 const run = now();
 const job = (label: string, task: string, input: string, maxTokens = 120): Job => ({ kind: "llm", task, input: `${input} (run ${run})`, maxTokens, deadline: now() + 600, label });
 
+const HOST = process.env.HOST_URL ?? "http://localhost:4100";
+const escrowStats = async () => (await (await fetch(`${HOST}/api/escrow`)).json()) as { account: string; released: number; refunded: number };
+const e0 = await escrowStats();
 const q0 = await queue();
 const BIG = q0.maxTokens; // the largest job the provider accepts
 console.log(`provider: worst case ${q0.speed.tps} tokens/s, largest job ${BIG} tokens`);
@@ -124,3 +127,30 @@ const rd = dispatched.find((x) => x.e.ticket === r.body.ticket);
 // A holder's jobs run on whichever of its tickets fits, most urgent first: either of A's small jobs.
 expect("the reservation ran one of A's jobs, not before it was due", !!rd && [jobHash(reserved), jobHash(waiting)].includes(rd.e.jobHash ?? "") && rd.ts >= at, rd ? `started ${rd.ts - at}s after notBefore` : "not dispatched");
 expect("no refunds: the provider kept its word", !ofType("refund").some((x) => promised.has(x.e.ticket ?? -1)), ofType("refund").map((x) => x.e.reason).join("; "));
+
+// ---- escrow: bookings are paid into escrow, and the keeper pays out once tickets start on time ----
+const payment = (await (await fetch(`${MIRROR}/transactions/${String(a.body.paymentTx).replace("@", "-").replace(/\.(\d+)$/, "-$1")}`)).json()) as any;
+expect("A's booking was paid into the escrow, not to the provider", (payment.transactions?.[0]?.transfers ?? []).some((t: any) => t.account === e0.account && t.amount > 0), e0.account);
+let e1 = e0;
+for (let i = 0; i < 12 && e1.released - e0.released < 4; i++) {
+  await new Promise((r) => setTimeout(r, 10_000));
+  e1 = await escrowStats();
+}
+expect("the escrow paid the provider for tickets that started on time", e1.released - e0.released >= 4, `${e1.released - e0.released} paid out`);
+expect("the escrow refunded nothing: no promise was missed", e1.refunded === e0.refunded, `${e1.refunded - e0.refunded} refunded`);
+
+// ---- NFT reuse: a returned ticket NFT is reissued (metadata rewrite) instead of minted ----
+if (serial > 0) {
+  const treasury = ((await (await fetch(`${MIRROR}/tokens/${tokenId}`)).json()) as any).treasury_account_id as string;
+  await returnTicket(hederaClient(A.id, A.key), tokenId, serial, A.id);
+  await waitForOwner(tokenId, serial, treasury);
+  const later = await reserve(A, 20, now() + 90);
+  const re = await tokenize(A, [later.body.ticket], true);
+  expect(
+    "tokenizing again reissues the returned NFT, for less than a mint",
+    re.status === 200 && Number(re.body.serials?.[later.body.ticket]) === serial && BigInt(re.body.price) < BigInt(tok.body.price),
+    re.status === 200 ? `NFT #${re.body.serials?.[later.body.ticket]} for ${re.body.price} (a mint was ${tok.body.price})` : `${re.status} ${re.body.error}`,
+  );
+  const nft = await slotInfo(hederaClient(A.id, A.key), tokenId, serial);
+  expect("the reissued NFT now names the new ticket", nft.owner === A.id && nft.meta.t === later.body.ticket, JSON.stringify(nft));
+}

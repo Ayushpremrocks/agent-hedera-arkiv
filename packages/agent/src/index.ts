@@ -59,6 +59,7 @@ const agent = await createAgent(
     maxBooking: BigInt(o["max-booking"]!),
     fresh: o.fresh,
     minutes: o.minutes ? Number(o.minutes) : undefined,
+    escrow: process.env.ESCROW_ID, // book only providers paid through this escrow, when set
     onFinish: (s) => (stats(s), process.exit(0)),
   },
   hub,

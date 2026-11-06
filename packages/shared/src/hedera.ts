@@ -1,4 +1,4 @@
-import { AccountId, Client, NftId, PrivateKey, TokenId, TokenNftInfoQuery } from "@hiero-ledger/sdk";
+import { AccountId, Client, NftId, PrivateKey, TokenId, TokenNftInfoQuery, TransferTransaction } from "@hiero-ledger/sdk";
 
 export const MIRROR = "https://testnet.mirrornode.hedera.com/api/v1";
 export const hashscan = (kind: "transaction" | "token" | "topic" | "account", id: string) =>
@@ -96,4 +96,14 @@ export async function waitForOwner(tokenId: string, serial: number, expected: st
     await new Promise((r) => setTimeout(r, 1000));
   }
   throw new Error(`Mirror never showed ${tokenId}#${serial} owned by ${expected}`);
+}
+
+/**
+ * Hand a ticket NFT back to its token's treasury once the ticket has started: the provider then
+ * reissues it for the next trade (a metadata rewrite, about $0.001) instead of minting a new one.
+ */
+export async function returnTicket(client: Client, tokenId: string, serial: number, from: string) {
+  const { treasury_account_id: treasury } = await mirror<{ treasury_account_id: string }>(`/tokens/${tokenId}`);
+  const tx = await new TransferTransaction().addNftTransfer(tokenId, serial, from, treasury).execute(client);
+  await tx.getReceipt(client);
 }

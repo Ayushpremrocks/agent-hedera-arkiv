@@ -130,7 +130,7 @@ export function Overview() {
           </ul>
         ) : (
           <div className="empty-line">
-            <p>Nothing in progress. A new task gets a start time it must meet, or the provider refunds it.</p>
+            <p>Nothing in progress. A new task gets a start time it must meet, or escrow refunds it.</p>
             <Link to="/app/tasks/new" className="text-link" viewTransition>
               Book a task <ArrowRight size={14} aria-hidden />
             </Link>

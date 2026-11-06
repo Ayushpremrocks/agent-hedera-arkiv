@@ -8,7 +8,8 @@ import { Empty, Ledger, Notice, PageHeader, useNow } from "../components/ui";
 import { clock, hashscan, hbar } from "../lib/format";
 import { type LogEvent, type Provider, type QueueEntry, type TrackRecord, keptRate } from "../lib/market";
 
-type Detail = { provider: Provider; online: boolean; record: TrackRecord; recent: (Omit<LogEvent, "provider" | "verified"> & { i: number })[] };
+type EscrowStats = { account: string; held: number; released: number; refunded: number; heldAmount: string; releasedAmount: string; refundedAmount: string };
+type Detail = { provider: Provider; online: boolean; record: TrackRecord; recent: (Omit<LogEvent, "provider" | "verified"> & { i: number })[]; escrow: EscrowStats };
 
 function line(e: any): string {
   switch (e.type) {
@@ -52,7 +53,8 @@ export function ProviderPage() {
       </div>
     );
   if (q.isError) return <Notice text={q.error.message} kind="error" />;
-  const { record: r, online, recent } = q.data;
+  const { record: r, online, recent, escrow: es } = q.data;
+  const escrowed = p!.escrow && p!.escrow === es.account;
   const rate = keptRate(r);
 
   return (
@@ -102,6 +104,18 @@ export function ProviderPage() {
               <dt>Largest job</dt>
               <dd>{p!.maxTokens ? `${p!.maxTokens.toLocaleString("en")} tokens` : "–"}</dd>
             </div>
+            <div>
+              <dt>Payments</dt>
+              <dd>{escrowed ? `held in escrow ${es.account}` : "paid to the provider directly (no escrow)"}</dd>
+            </div>
+            {escrowed && (
+              <div>
+                <dt>Escrow now</dt>
+                <dd>
+                  {es.held} held · {es.released} paid out · {es.refunded} refunded ({hbar(es.refundedAmount)})
+                </dd>
+              </div>
+            )}
             <div>
               <dt>Record since</dt>
               <dd>{r.since ? new Date(r.since * 1000).toLocaleString() : "–"}</dd>

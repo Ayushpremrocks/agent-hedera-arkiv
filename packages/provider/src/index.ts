@@ -30,6 +30,7 @@ import {
   jobHash,
   need,
   nftOwner,
+  ownedSerials,
   parseJob,
   role,
   serve,
@@ -51,11 +52,17 @@ const GRACE_SECONDS = 3; // a ticket starting later than startBy + this is refun
 // Tokenizing locks a ticket from starting this long, so a swap can't race the ticket starting.
 const TRADE_LOCK_SECONDS = SWAP_VALID_SECONDS + CUTOFF_SECONDS + 15;
 const RESERVE_HORIZON = Number(process.env.RESERVE_HORIZON_SECONDS ?? 3600); // how far ahead tickets are sold
-// The floor covers what serving one booking costs on Hedera (two batched log entries and the payment),
-// with margin. Fees are set in USD, so the floor is too (PRICE_FLOOR in tinybars overrides).
-const PRICE_FLOOR_CENTS = Number(process.env.PRICE_FLOOR_CENTS ?? 2.5);
-// Turning a ticket into an NFT costs a mint and a transfer, about 1.5 US cents; whoever trades pays it.
+// The floor covers what serving one booking costs on Hedera (the payment, a share of a batched log
+// message and of an escrow payout), with margin. Nothing is minted per booking any more. Fees are set
+// in USD, so the floor is too (PRICE_FLOOR in tinybars overrides).
+const PRICE_FLOOR_CENTS = Number(process.env.PRICE_FLOOR_CENTS ?? 0.5);
+// Turning a ticket into an NFT for a trade: a fresh mint plus transfer is about 2 US cents; reissuing a
+// returned NFT (rewrite its metadata, transfer it) about 0.2. Whoever trades pays it.
 const TOKENIZE_CENTS = Number(process.env.TOKENIZE_CENTS ?? 2);
+const REISSUE_CENTS = Number(process.env.REISSUE_CENTS ?? 0.2);
+// Bookings are paid into this escrow, which pays the provider once a ticket starts on time and refunds
+// the buyer otherwise. Without one, the provider takes payment and owes refunds itself.
+const ESCROW = process.env.ESCROW_ID ?? "";
 const PRICE_WINDOW = Number(process.env.PRICE_WINDOW_SECONDS ?? 300); // how much queued work counts as "busy"
 const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 600); // drop queued jobs this far past their deadline
 const MAX_QUEUE = 20; // queued jobs per account; bookings are paid, this just bounds memory
@@ -65,6 +72,7 @@ const T = role(PROVIDER_NAME === "PROVIDER" ? "TREASURY" : `${PROVIDER_NAME}_TRE
 const client = hederaClient(P.id, P.key);
 const { tokenId, topicId } = await ensureInfra(client, P, T);
 console.log(`provider ${P.id}  token ${hashscan("token", tokenId)}  topic ${hashscan("topic", topicId)}`);
+console.log(ESCROW ? `bookings are paid into escrow ${ESCROW}` : "no ESCROW_ID: bookings are paid to this provider, which owes refunds itself");
 
 // Every event goes out in signed batches: one HCS fee per batch, not per event.
 const batcher = new EventBatcher(client, topicId, P.id, P.key);
@@ -77,7 +85,11 @@ async function cents(c: number): Promise<bigint> {
   const r = ((await (await fetch(`${MIRROR}/network/exchangerate`)).json()) as any).current_rate; // cent_equivalent cents = hbar_equivalent HBAR
   return BigInt(Math.ceil(((c * r.hbar_equivalent) / r.cent_equivalent) * 1e8));
 }
-const prices = async () => ({ floor: process.env.PRICE_FLOOR ? BigInt(process.env.PRICE_FLOOR) : await cents(PRICE_FLOOR_CENTS), tokenize: await cents(TOKENIZE_CENTS) });
+const prices = async () => ({
+  floor: process.env.PRICE_FLOOR ? BigInt(process.env.PRICE_FLOOR) : await cents(PRICE_FLOOR_CENTS),
+  tokenize: await cents(TOKENIZE_CENTS),
+  reissue: await cents(REISSUE_CENTS),
+});
 let PRICES = await prices();
 setInterval(() => prices().then((p) => (PRICES = p)).catch(() => {}), 3600_000).unref();
 console.log(`booking floor ${PRICES.floor} tinybars, tokenizing ${PRICES.tokenize} per ticket`);
@@ -117,10 +129,19 @@ function price(): bigint {
   return bookingPrice(pending().length + runningTickets().length, capacity, PRICES.floor);
 }
 
+// Ticket NFTs returned to the treasury (agents hand them back once their ticket has started), not yet
+// reissued. `claimed` stops two concurrent trades taking the same one.
+const claimed = new Set<number>();
+async function freeSerials() {
+  const inUse = new Set(pending().flatMap((n) => (tickets[n].serial === undefined ? [] : [tickets[n].serial!])));
+  const held = await ownedSerials(T.id, tokenId).catch(() => []);
+  return held.filter((s) => !inUse.has(s) && !claimed.has(s));
+}
+
 /** Pay back a ticket's price once: its promise was missed or the provider failed it. */
 async function refundTicket(n: number, reason: string) {
   const t = tickets[n];
-  if (t.refunded) return;
+  if (ESCROW || t.refunded) return; // with an escrow, the escrow refunds from the payment it holds
   t.refunded = true;
   saveTickets();
   await refund(await holder(t), BigInt(t.price), t.paymentTx, reason, n);
@@ -220,11 +241,11 @@ saveTickets();
 console.log(`restored ${pending().length} queued ticket(s), ${[...queues.values()].flat().length} queued job(s)`);
 
 // ---- HTTP ----
-const requirements = (amount: bigint) =>
-  x402.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo: P.id, price: { asset: HBAR, amount: amount.toString() }, maxTimeoutSeconds: 120 });
+const requirements = (amount: bigint, payTo: string) =>
+  x402.buildPaymentRequirements({ scheme: "exact", network: NETWORK, payTo, price: { asset: HBAR, amount: amount.toString() }, maxTimeoutSeconds: 120 });
 
 /** Charge through x402: no header answers 402 with `quote`; with a matching payment it settles. */
-async function charge(headers: Record<string, unknown>, quote: bigint, account: string, url: string, extra: object): Promise<{ status: 402; res: Res } | { status: 200; amount: string; tx: string; settled: any }> {
+async function charge(headers: Record<string, unknown>, quote: bigint, account: string, url: string, extra: object, payTo = P.id): Promise<{ status: 402; res: Res } | { status: 200; amount: string; tx: string; settled: any }> {
   const header = headers["payment-signature"];
   let payload = null;
   try {
@@ -234,11 +255,11 @@ async function charge(headers: Record<string, unknown>, quote: bigint, account: 
   }
   if (!payload || BigInt(payload.accepted?.amount ?? 0) < quote) {
     // The price may have risen since the client's quote: nothing settled, so just quote again.
-    const required = await x402.createPaymentRequiredResponse(await requirements(quote), { url });
+    const required = await x402.createPaymentRequiredResponse(await requirements(quote, payTo), { url });
     return { status: 402, res: { status: 402, body: { error: "payment required", price: quote.toString(), ...extra }, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } } };
   }
   // Requirements are rebuilt server-side at the client's (>= quote) amount; only that may match.
-  const match = x402.findMatchingRequirements(await requirements(BigInt(payload.accepted.amount)), payload);
+  const match = x402.findMatchingRequirements(await requirements(BigInt(payload.accepted.amount), payTo), payload);
   if (!match) throw new HttpError(402, "payment does not match the offered terms");
   const verified = await x402.verifyPayment(payload, match);
   if (!verified.isValid) throw new HttpError(402, `payment invalid: ${verified.invalidReason}`);
@@ -307,14 +328,14 @@ await serve(PORT, {
 
     const terms = () => ({ floor: PRICES.floor.toString(), startBy: promiseNow(limit), limit, maxTokens: job.maxTokens });
     if (!headers["payment-signature"]) {
-      const quote = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms());
+      const quote = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
       if (quote.status === 402) return quote.res;
     }
     // Queue the job first so a parallel /book of the same job gets 409 and can't double-pay.
     enqueue(account, { job, hash });
     let paid;
     try {
-      paid = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms());
+      paid = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
     } catch (e) {
       dequeue(account, hash);
       throw e;
@@ -324,7 +345,7 @@ await serve(PORT, {
       return paid.res;
     }
     const n = issue(account, paid, job.maxTokens, limit, now());
-    log({ type: "booked", ticket: n, owner: account, jobHash: hash, price: paid.amount, startBy: tickets[n].startBy, maxTokens: job.maxTokens });
+    log({ type: "booked", ticket: n, owner: account, jobHash: hash, price: paid.amount, startBy: tickets[n].startBy, maxTokens: job.maxTokens, paymentTx: paid.tx });
     pump();
     return {
       body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx },
@@ -348,10 +369,10 @@ await serve(PORT, {
     if (limit > MAX_RUN_SECONDS) throw new HttpError(400, `at most ${maxTokensWithin(MAX_RUN_SECONDS, SPEED)} tokens fit in one job here`);
     const account = await signed("reserve", `${maxTokens}@${notBefore}`, body);
     const terms = () => ({ floor: PRICES.floor.toString(), startBy: promiseNow(limit, notBefore), limit, maxTokens, notBefore });
-    const paid = await charge(headers, price(), account, `${BOOKING_URL}/reserve`, terms());
+    const paid = await charge(headers, price(), account, `${BOOKING_URL}/reserve`, terms(), ESCROW || P.id);
     if (paid.status === 402) return paid.res;
     const n = issue(account, paid, maxTokens, limit, notBefore);
-    log({ type: "booked", ticket: n, owner: account, jobHash: "", price: paid.amount, startBy: tickets[n].startBy, maxTokens, notBefore });
+    log({ type: "booked", ticket: n, owner: account, jobHash: "", price: paid.amount, startBy: tickets[n].startBy, maxTokens, notBefore, paymentTx: paid.tx });
     pump();
     return {
       body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx },
@@ -387,6 +408,7 @@ await serve(PORT, {
       speed: SPEED,
       maxRunSeconds: MAX_RUN_SECONDS,
       maxTokens: maxTokensWithin(MAX_RUN_SECONDS, SPEED),
+      escrow: ESCROW || null,
       graceSeconds: GRACE_SECONDS,
       tickets: Object.keys(tickets)
         .map(Number)
@@ -426,7 +448,16 @@ await serve(PORT, {
       return { body: { serials: serials(), price: "0", lockedUntil: Math.min(...list.map((n) => tickets[n].notBefore)) } };
     }
 
-    const paid = await charge(headers, PRICES.tokenize * BigInt(todo.length), account, `${BOOKING_URL}/tickets/tokenize`, { tickets: todo });
+    // Returned NFTs sitting in the treasury are rewritten and reissued; only the rest are minted.
+    const reuse = (await freeSerials()).slice(0, todo.length);
+    for (const s of reuse) claimed.add(s);
+    const cost = PRICES.reissue * BigInt(reuse.length) + PRICES.tokenize * BigInt(todo.length - reuse.length);
+    let paid;
+    try {
+      paid = await charge(headers, cost, account, `${BOOKING_URL}/tickets/tokenize`, { tickets: todo, reissued: reuse.length });
+    } finally {
+      if (!paid || paid.status === 402) for (const s of reuse) claimed.delete(s);
+    }
     if (paid.status === 402) return paid.res;
     // Lock before minting: a mint takes seconds and the ticket must not start meanwhile.
     if (list.some((n) => tickets[n].status !== "queued")) {
@@ -435,9 +466,10 @@ await serve(PORT, {
     }
     lock();
     try {
-      for (const n of todo) {
+      for (const [i, n] of todo.entries()) {
         const owner = owners[list.indexOf(n)];
-        const issued = await issueSlot(client, tokenId, T, owner, { t: n });
+        const issued = await issueSlot(client, tokenId, T, owner, { t: n }, reuse[i]);
+        if (reuse[i] !== undefined) claimed.delete(reuse[i]);
         tickets[n].serial = issued.serial;
         saveTickets();
         log({ type: "tokenized", ticket: n, serial: issued.serial, owner });
@@ -481,6 +513,7 @@ const profile = () => ({
   tps: u64(SPEED.tps),
   startup_ms: u64(SPEED.startupMs),
   max_tokens: u64(maxTokensWithin(MAX_RUN_SECONDS, SPEED)),
+  escrow: ESCROW,
   booking_url: BOOKING_URL,
   model: LLM_MODEL,
   workers: u64(WORKERS),

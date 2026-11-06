@@ -8,3 +8,4 @@ export * from "./job.js";
 export * from "./swap.js";
 export * from "./x402.js";
 export * from "./record.js";
+export * from "./escrow.js";

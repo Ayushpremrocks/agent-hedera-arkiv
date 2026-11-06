@@ -15,6 +15,7 @@ import { appendFileSync } from "node:fs";
 import { parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { challenge, session, useAuthSecret, verify } from "./auth.js";
+import { startEscrow } from "./escrow.js";
 import { DATA_DIR, openDb, schema } from "./db/index.js";
 import { allowanceLeft, balanceOf, ensureFunds, sweep } from "./funding.js";
 import { agentKey, sessionKey } from "./keys.js";
@@ -142,6 +143,7 @@ async function run(id: string, owner: string, keyIndex: number) {
       baseUrl: `${HOST_URL}/agents/${id}`,
       names,
       fund: (amount) => ensureFunds(client, id, owner, amount),
+      escrow: escrow.id,
       onTask: (e) => void onTask(e).catch((err) => console.error(`task ${e.jobHash}:`, err.message)),
     },
     hub,
@@ -150,6 +152,26 @@ async function run(id: string, owner: string, keyIndex: number) {
   hosted.set(id, { agent, owner, key, client });
   return agent;
 }
+
+// Bookings are paid into this escrow; providers on this machine read ESCROW_ID from .env.
+const escrow = await startEscrow({
+  key: agentKey(MASTER, "escrow", 0),
+  operator,
+  dataDir: DATA_DIR,
+  live: () => [...hub.live.keys()],
+  known: (id) => hub.known(id),
+  readLog: async (id) => {
+    await recordOf(id);
+    return logs.get(hub.known(id)!.topicId)?.events ?? [];
+  },
+});
+if (process.env.ESCROW_ID !== escrow.id) {
+  appendFileSync(ENV_PATH, `
+ESCROW_ID=${escrow.id}
+`);
+  process.env.ESCROW_ID = escrow.id;
+}
+console.log(`escrow ${escrow.id}: holds every booking until its ticket starts on time`);
 
 for (const a of await db.select().from(agents)) {
   await run(a.id, a.owner, a.keyIndex);
@@ -190,6 +212,9 @@ const creating = new Set<string>();
 
 await serve(PORT, {
   "GET /api/health": async () => ({ body: { ok: true, agents: hosted.size, providers: hub.live.size } }),
+
+  // ---- the escrow: its account and what it holds, paid out and refunded ----
+  "GET /api/escrow": async () => ({ body: { account: escrow.id, ...escrow.stats() } }),
 
   // ---- sign in ----
   "POST /api/auth/challenge": async ({ body }) => ({ body: challenge(body?.account) }),
@@ -304,7 +329,7 @@ await serve(PORT, {
     if (!p) throw new HttpError(404, "no provider with that account has been seen on Arkiv");
     const record = await recordOf(p.id);
     const recent = (logs.get(p.topicId)?.events ?? []).slice(-40).reverse();
-    return { body: { provider: p, online: hub.live.has(p.id), record, recent } };
+    return { body: { provider: p, online: hub.live.has(p.id), record, recent, escrow: { account: escrow.id, ...escrow.stats(p.id) } } };
   },
 
   // ---- swaps from other agents (anywhere) into a hosted agent's slots ----

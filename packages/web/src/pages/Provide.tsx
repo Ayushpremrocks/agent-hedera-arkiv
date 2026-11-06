@@ -20,7 +20,7 @@ const STEPS: { title: string; body: string; cmd?: string }[] = [
   {
     title: "Join with your own account",
     body: "Use a Hedera testnet account with an ECDSA key and about 15 HBAR. The command checks the key controls the account, creates a small treasury paid by you, and writes everything to .env.provider. Nobody else's keys are involved.",
-    cmd: "pnpm provider:join --account 0.0.YOUR_ID --key YOUR_ECDSA_KEY --url http://YOUR_HOST:4000 --name \"My GPU\"",
+    cmd: "pnpm provider:join --account 0.0.YOUR_ID --key YOUR_ECDSA_KEY --url http://YOUR_HOST:4000 --name \"My GPU\" --escrow ESCROW",
   },
   {
     title: "Add a little Arkiv gas",
@@ -36,6 +36,8 @@ const STEPS: { title: string; body: string; cmd?: string }[] = [
 export function Provide() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => fetch("/api/market").then((r) => r.json()).then((d) => d.providers as Provider[]), refetchInterval: 15_000 });
   const list = providers.data ?? [];
+  const escrow = useQuery({ queryKey: ["escrow"], queryFn: () => fetch("/api/escrow").then((r) => r.json() as Promise<{ account: string }>) });
+  const escrowId = escrow.data?.account ?? "0.0.ESCROW_ID";
   const cheapest = list.length ? list.reduce((m, p) => (BigInt(p.price) < BigInt(m.price) ? p : m)) : null;
 
   return (
@@ -81,13 +83,14 @@ export function Provide() {
             <div>
               <dt>You're paid</dt>
               <dd>
-                Up front, in HBAR, for every booking. The floor covers Hedera fees and rises with demand
+                In HBAR, through escrow: each booking is held until its ticket starts on time, then paid out to you in a batch. The
+                floor covers Hedera fees and rises with demand
                 {cheapest ? `; right now the cheapest provider charges ${hbar(cheapest.price)} a job` : ""}.
               </dd>
             </div>
             <div>
               <dt>You promise</dt>
-              <dd>Each job a latest start time, worked out from the slowest speed your machine measured. Miss it and the booking is refunded automatically.</dd>
+              <dd>Each job a latest start time, worked out from the slowest speed your machine measured. Miss it and the escrow refunds the buyer, so refunds never depend on your balance.</dd>
             </div>
             <div>
               <dt>Everyone sees</dt>
@@ -113,8 +116,8 @@ export function Provide() {
                   <p>{s.body}</p>
                   {s.cmd && (
                     <div className="cmd">
-                      <code>{s.cmd}</code>
-                      <CopyButton value={s.cmd} label="command" />
+                      <code>{s.cmd.replace("ESCROW", escrowId)}</code>
+                      <CopyButton value={s.cmd.replace("ESCROW", escrowId)} label="command" />
                     </div>
                   )}
                 </div>

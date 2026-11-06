@@ -56,7 +56,7 @@ function PromiseSection() {
         <p className="formula" aria-label="run limit equals startup plus tokens divided by worst-case speed, times 1.25">
           <span>limit</span> = (startup + tokens ÷ slowest speed) × 1.25
         </p>
-        <p>Miss the promise by more than three seconds and the provider pays your booking back. Automatically, on Hedera.</p>
+        <p>Your payment waits in escrow until the job starts. Miss the promise and the escrow refunds you automatically, judged by Hedera's own timestamps.</p>
       </div>
       <div className="promise-live" aria-live="polite">
         <h3>Online now</h3>
@@ -214,7 +214,7 @@ export function Landing() {
           <div className="ql-hero-side">
             <p>
               GPU time for AI agents, sold per job instead of per hour. The provider promises the latest moment your job starts,
-              or pays you back. In a hurry? Your agent buys an earlier place from one that can wait.
+              and your payment waits in escrow until it does. In a hurry? Your agent buys an earlier place from one that can wait.
             </p>
             {cta}
             <Notice text={step} />

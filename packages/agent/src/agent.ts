@@ -32,6 +32,7 @@ import {
   parseKey,
   postEvent,
   postPaid,
+  returnTicket,
   runLimit,
   sha256,
   signRequest,
@@ -58,6 +59,8 @@ export type AgentOptions = {
   onFinish?: (stats: State["stats"]) => void;
   /** Called before the agent spends `amount` tinybars, so a host can top its account up first. */
   fund?: (amount: bigint) => Promise<void>;
+  /** Only book providers whose bookings are paid into this escrow, so every refund is backed. */
+  escrow?: string;
   log?: (line: string) => void;
   /** Lifecycle of every job, for a host to record (database) and publish (Arkiv). */
   onTask?: (e: TaskEvent) => void;
@@ -228,6 +231,10 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         emit({ kind: "failed", jobHash: e.jobHash, reason: "expired before any slot ran it" });
       }
     } else if (e.type === "dispatch") {
+      // A traded ticket's NFT goes back to the treasury once it has started, to be reissued.
+      const nft = hub.history.find((x) => x.by === provider && x.e.type === "tokenized" && x.e.ticket === e.ticket);
+      const serial = nft?.e.type === "tokenized" ? nft.e.serial : null;
+      if (serial !== null) returnTicket(client, known(provider).tokenId, serial, me.id).catch((err) => say(`NFT #${serial} not returned: ${err.message}`));
       delete state.slots[slotKey(provider, e.ticket)];
       delete state.sizes[slotKey(provider, e.ticket)];
       const job = e.jobHash ? state.jobs[e.jobHash] : undefined;
@@ -296,7 +303,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
 
   /** Providers in order of preference: cheapest whose promise meets the deadline, then soonest free. */
   function rankProviders(deadline: number, tokens: number): Provider[] {
-    const affordable = [...hub.live.values()].filter((p) => BigInt(p.price) <= maxBooking && p.maxTokens >= tokens);
+    const affordable = [...hub.live.values()].filter((p) => BigInt(p.price) <= maxBooking && p.maxTokens >= tokens && (!opts.escrow || p.escrow === opts.escrow));
     const byPrice = (a: Provider, b: Provider) => Number(BigInt(a.price) - BigInt(b.price));
     const inTime = affordable.filter((p) => p.nextFree + runFor(p, tokens) + LOG_SLACK <= deadline).sort(byPrice);
     const late = affordable.filter((p) => !inTime.includes(p)).sort((a, b) => a.nextFree - b.nextFree || byPrice(a, b));
@@ -348,7 +355,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     let booked: { status: number; body: any } = { status: 0, body: { error: `no live provider quoted within ${maxBooking} tinybars` } };
     for (p of ranked) {
       await fund(BigInt(p.price) * 2n); // quotes can rise a little before payment settles
-      booked = await postPaid(`${p.bookingUrl}/book`, { job, ...signRequest("book", me.id, me.key, hash) }, payer).catch((e) => ({ status: 0, body: { error: e.message } }));
+      booked = await postPaid(`${p.bookingUrl}/book`, { job, ...signRequest("book", me.id, me.key, hash) }, payer, 3, 60_000, opts.escrow).catch((e) => ({ status: 0, body: { error: e.message } }));
       if (booked.status === 200) break;
       say(`could not book "${t.label}" at ${p.name}: ${booked.status} ${booked.body.error}`);
     }
@@ -435,10 +442,10 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
 
   /** Buy a ticket now for a job that will come at `at`: today's price, a promise for then. */
   async function reserveAhead(at: number, tokens: number) {
-    const p = [...hub.live.values()].filter((c) => c.maxTokens >= tokens && BigInt(c.price) <= maxBooking).sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)))[0];
+    const p = [...hub.live.values()].filter((c) => c.maxTokens >= tokens && BigInt(c.price) <= maxBooking && (!opts.escrow || c.escrow === opts.escrow)).sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)))[0];
     if (!p) return;
     await fund(BigInt(p.price) * 2n);
-    const res = await postPaid(`${p.bookingUrl}/reserve`, { maxTokens: tokens, notBefore: at, ...signRequest("reserve", me.id, me.key, `${tokens}@${at}`) }, payer).catch((e) => ({
+    const res = await postPaid(`${p.bookingUrl}/reserve`, { maxTokens: tokens, notBefore: at, ...signRequest("reserve", me.id, me.key, `${tokens}@${at}`) }, payer, 3, 60_000, opts.escrow).catch((e) => ({
       status: 0,
       body: { error: e.message },
     }));

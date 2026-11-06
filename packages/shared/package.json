@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./arkiv": "./src/arkiv.ts",
-    "./record": "./src/record.ts"
+    "./record": "./src/record.ts",
+    "./escrow": "./src/escrow.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "1.0.1",
