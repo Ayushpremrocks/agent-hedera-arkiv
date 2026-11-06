@@ -13,8 +13,8 @@ const STEPS: { title: string; body: string; cmd?: string }[] = [
     cmd: "ollama pull qwen2.5:0.5b-instruct",
   },
   {
-    title: "Get the QueueYield code",
-    body: "From the QueueYield repository, install once. Node 22 and pnpm.",
+    title: "Get the Dani.ai code",
+    body: "From the Dani.ai repository, install once. Node 22 and pnpm.",
     cmd: "pnpm install",
   },
   {
@@ -44,8 +44,8 @@ export function Provide() {
         Skip to content
       </a>
       <header className="ql-top">
-        <Link to="/" className="ql-logo" aria-label="QueueYield home">
-          QueueYield
+        <Link to="/" className="ql-logo" aria-label="Dani.ai home">
+          Dani.ai
         </Link>
         <nav aria-label="Main">
           <Link to="/network" viewTransition className="ql-nav">

@@ -7,7 +7,7 @@ import { AccountAllowanceApproveTransaction, Client, Hbar, LedgerId, Transaction
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string;
 
 const connector = new DAppConnector(
-  { name: "QueueYield", description: "GPU time for AI agents", url: location.origin, icons: [`${location.origin}/favicon.ico`] },
+  { name: "Dani.ai", description: "GPU time for AI agents", url: location.origin, icons: [`${location.origin}/favicon.ico`] },
   LedgerId.TESTNET,
   projectId,
   Object.values(HederaJsonRpcMethod),

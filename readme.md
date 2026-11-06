@@ -1,9 +1,9 @@
-# QueueYield (agent-hedera-arkiv) — Deep Dive
+# Dani.ai (agent-hedera-arkiv) — Deep Dive
 ---
 
 ## 1. What Is This Project?
 
-**QueueYield** is a decentralized **compute-slot marketplace** where:
+**Dani.ai** is a decentralized **compute-slot marketplace** where:
 
 - A **Provider** sells time-boxed execution slots as **NFTs** on the Hedera Token Service (HTS).
 - **Agents** buy those slots (paying HBAR via the x402 HTTP payment protocol) and submit jobs to be run when their slot starts.

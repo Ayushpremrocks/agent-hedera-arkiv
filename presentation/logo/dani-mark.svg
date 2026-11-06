@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="dani.ai mark">
+  <rect x="2" y="2" width="96" height="96" rx="22" fill="#12161B" stroke="#2A313A" stroke-width="2"/>
+  <rect x="16" y="30" width="42" height="14" rx="4" fill="#E8ECF0"/>
+  <rect x="16" y="56" width="28" height="14" rx="4" fill="#E8ECF0"/>
+  <line x1="68" y1="18" x2="68" y2="82" stroke="#FFB000" stroke-width="5" stroke-dasharray="7 6" stroke-linecap="round"/>
+</svg>

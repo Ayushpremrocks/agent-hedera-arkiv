@@ -1,4 +1,4 @@
-// Become a QueueYield provider with your own Hedera testnet account: no shared keys, no one's .env.
+// Become a Dani.ai provider with your own Hedera testnet account: no shared keys, no one's .env.
 //
 //   pnpm provider:join --account 0.0.1234 --key <your ECDSA private key> --url http://<reachable host>:4000
 //                      [--name "My GPU"] [--model qwen2.5:0.5b-instruct] [--llm http://localhost:11434/v1]
@@ -46,7 +46,7 @@ const { MIRROR, arkivReader, arkivWriter, evmKey, hederaClient, parseKey } = awa
 // 1. The key must control the account, and be ECDSA: Arkiv entities are signed with its EVM form.
 const acct = (await (await fetch(`${MIRROR}/accounts/${a.account}`)).json()) as any;
 if (!acct?.key) fail(`${a.account} wasn't found on testnet.`);
-if (acct.key._type !== "ECDSA_SECP256K1") fail(`${a.account} has an ${acct.key._type} key; QueueYield needs an ECDSA account (it signs on Arkiv too).`);
+if (acct.key._type !== "ECDSA_SECP256K1") fail(`${a.account} has an ${acct.key._type} key; Dani.ai needs an ECDSA account (it signs on Arkiv too).`);
 let key: PrivateKey;
 try {
   key = parseKey(a.key!);
@@ -74,7 +74,7 @@ const label = a.name!.replace(/[\r\n"]/g, "");
 writeFileSync(
   out,
   [
-    `# QueueYield provider "${label}", made by pnpm provider:join. Keep this file private.`,
+    `# Dani.ai provider "${label}", made by pnpm provider:join. Keep this file private.`,
     `PROVIDER_NAME=PROVIDER`,
     `PROVIDER_LABEL="${label}"`,
     `PROVIDER_ID=${a.account}`,

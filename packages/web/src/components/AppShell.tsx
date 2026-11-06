@@ -74,7 +74,7 @@ export function AppShell() {
       </a>
       <aside className="rail">
         <Link to={account ? "/app" : "/"} className="rail-logo" viewTransition>
-          QueueYield
+          Dani.ai
         </Link>
         {account && (
           <Link to="/app/tasks/new" className="btn btn-primary rail-new" viewTransition>

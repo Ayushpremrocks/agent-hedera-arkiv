@@ -1,4 +1,4 @@
-# QueueYield: product
+# Dani.ai: product
 
 ## Platform
 web (React 19 + Vite SPA; desktop first, must work on phones).

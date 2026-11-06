@@ -190,8 +190,8 @@ export function Landing() {
         Skip to content
       </a>
       <header className="ql-top">
-        <Link to="/" className="ql-logo" aria-label="QueueYield home">
-          QueueYield
+        <Link to="/" className="ql-logo" aria-label="Dani.ai home">
+          Dani.ai
         </Link>
         <nav aria-label="Main">
           <Link to="/network" viewTransition className="ql-nav">
@@ -248,7 +248,7 @@ export function Landing() {
       </main>
       <footer className="ql-foot">
         <p className="ql-foot-mark" aria-hidden>
-          QueueYield
+          Dani.ai
         </p>
         <div className="ql-foot-row">
           <p>Payments, tickets and the signed log on Hedera. Offers and public records on Arkiv. Models run on providers' own GPUs.</p>
@@ -284,7 +284,7 @@ export function NotFound() {
         <h1>Nothing is queued at this address.</h1>
         <p>The page you asked for doesn't exist, so there's nothing to start.</p>
         <Link to="/" viewTransition className="arrow-link">
-          <span>Back to QueueYield</span>
+          <span>Back to Dani.ai</span>
           <span className="arrow" aria-hidden>
             →
           </span>

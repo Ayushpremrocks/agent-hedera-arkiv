@@ -20,7 +20,7 @@ const mac = (data: string) => createHmac("sha256", secret).update(data).digest("
 export function challenge(account: unknown) {
   if (!isAccount(account)) throw new HttpError(400, "account must look like 0.0.1234");
   for (const [m, c] of challenges) if (c.expires < now()) challenges.delete(m);
-  const message = `Sign in to QueueYield\naccount: ${account}\nnonce: ${randomBytes(12).toString("hex")}\nexpires: ${now() + CHALLENGE_SECONDS}`;
+  const message = `Sign in to Dani.ai\naccount: ${account}\nnonce: ${randomBytes(12).toString("hex")}\nexpires: ${now() + CHALLENGE_SECONDS}`;
   challenges.set(message, { account, expires: now() + CHALLENGE_SECONDS });
   return { message };
 }

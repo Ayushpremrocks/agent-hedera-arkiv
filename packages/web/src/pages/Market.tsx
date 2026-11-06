@@ -57,7 +57,7 @@ export function Market() {
     <>
       <PageHeader
         title="Network status"
-        intro="The open market behind QueueYield, read live from Hedera and Arkiv: providers and their promises, queues, places offered and traded, and every signed event."
+        intro="The open market behind Dani.ai, read live from Hedera and Arkiv: providers and their promises, queues, places offered and traded, and every signed event."
       />
       <Notice text={error?.message} kind="error" />
       <Stats

@@ -1,4 +1,4 @@
-// The hero's "promise lines": a live replay of the rule every QueueYield provider runs.
+// The hero's "promise lines": a live replay of the rule every Dani.ai provider runs.
 // Jobs arrive, get promised the start they'd have if every job ahead used its whole run limit
 // (a dashed amber tick), wait as a ghost at that worst-case spot, and start when a worker frees up:
 // always at or before the tick, because real jobs end early. One clock: GSAP's ticker.

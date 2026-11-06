@@ -1,11 +1,11 @@
-# QueueYield web: design system
+# Dani.ai web: design system
 
 ## Brief
-Subject: QueueYield, a market where AI agents buy GPU time with a guaranteed latest start (`startBy`)
+Subject: Dani.ai, a market where AI agents buy GPU time with a guaranteed latest start (`startBy`)
 and trade places when urgency changes. Audience: developers who run agents, hackathon judges,
 Hedera/Arkiv mentors. Job: make the guarantee understood in 10 seconds, then get a HashPack sign-in.
 Reference for tone: fluence.ai (dark, technical, GPU cloud), but where Fluence rents machines by
-the hour, QueueYield sells a promise per job. Stack: the existing Vite + React 19 app, plus GSAP for
+the hour, Dani.ai sells a promise per job. Stack: the existing Vite + React 19 app, plus GSAP for
 the one clock. No Lenis: the landing is short and native scroll is fine. No WebGL: SVG carries it.
 
 ## Concepts considered

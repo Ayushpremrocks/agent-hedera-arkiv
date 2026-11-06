@@ -21,7 +21,7 @@ export async function ensureInfra(client: Client, provider: Role, treasury: Role
 
   // Provider key may only mint (supply key); unissued slots sit with the separate treasury.
   const tokenTx = await new TokenCreateTransaction()
-    .setTokenName("QueueYield Slot")
+    .setTokenName("Dani.ai Slot")
     .setTokenSymbol("QYSLOT")
     .setTokenType(TokenType.NonFungibleUnique)
     .setSupplyType(TokenSupplyType.Infinite)
@@ -33,7 +33,7 @@ export async function ensureInfra(client: Client, provider: Role, treasury: Role
 
   // No submit key: sellers post trades here too. Every message is signed by its sender instead.
   const topicId = (
-    await (await new TopicCreateTransaction().setTopicMemo("QueueYield log").execute(client)).getReceipt(client)
+    await (await new TopicCreateTransaction().setTopicMemo("Dani.ai log").execute(client)).getReceipt(client)
   ).topicId!.toString();
 
   const infra = { tokenId, topicId };

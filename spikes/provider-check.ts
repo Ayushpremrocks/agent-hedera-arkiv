@@ -33,7 +33,7 @@ const job = (label: string, task: string, input: string, maxTokens = 120): Job =
 const q0 = await queue();
 const BIG = q0.maxTokens; // the largest job the provider accepts
 console.log(`provider: worst case ${q0.speed.tps} tokens/s, largest job ${BIG} tokens`);
-const jobB = job("B summary", "Summarise in one sentence.", "Agent B booked a GPU slot on QueueYield and listed it for sale on Arkiv.");
+const jobB = job("B summary", "Summarise in one sentence.", "Agent B booked a GPU slot on Dani.ai and listed it for sale on Arkiv.");
 const jobA = job("A triage", "Answer in two bullet points.", "A slot was sold for 0.02 HBAR. Is the market getting tighter?");
 // Long jobs to keep the workers busy, each as big as the provider allows.
 const filler = (who: string, i: number) => job(`${who} filler ${i}`, "Write the integers from 1 to 5000 separated by commas, with nothing else.", `Start at 1. (${i})`, BIG);

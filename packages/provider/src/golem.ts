@@ -1,5 +1,5 @@
 // Rent a machine on the Golem Network, run an LLM server on it, and expose that server's API on a local
-// port. A QueueYield provider then sells the machine's capacity: run it with
+// port. A Dani.ai provider then sells the machine's capacity: run it with
 // LLM_BASE_URL=http://localhost:<port>/v1. The provider calibrates its speed through the tunnel, so its
 // promises reflect the rented machine, not this laptop.
 //

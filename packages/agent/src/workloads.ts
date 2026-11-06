@@ -1,4 +1,4 @@
-// What each kind of agent actually works on: real reports about QueueYield's own live market,
+// What each kind of agent actually works on: real reports about Dani.ai's own live market,
 // built from the signed HCS log and the offers on Arkiv. Only the model call runs on the provider.
 import type { LoggedEvent } from "@qy/shared";
 
@@ -53,7 +53,7 @@ const offerLines = (m: Market) =>
   m.offers.map((o) => `slot #${o.serial} starting ${clock(o.start)}, ${m.names[o.seller] ?? o.seller} asks ${hbar(o.price)}, accepts slots up to ${clock(o.latestOk)}`).join("\n") ||
   "(no slots for sale)";
 
-const CONTEXT = "QueueYield is a market where AI agents book 30-second GPU slots from a provider, and trade them so urgent jobs run first.";
+const CONTEXT = "Dani.ai is a market where AI agents book 30-second GPU slots from a provider, and trade them so urgent jobs run first.";
 
 export const ROLES: Record<string, Role> = {
   /** Works only on tasks its user hands it (POST /tasks, or `pnpm task`); prices come with each task. */

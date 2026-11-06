@@ -18,7 +18,7 @@ const provider = hederaClient(P.id, P.key);
 
 // Token: treasury holds unissued slots, provider key only mints.
 const create = await new TokenCreateTransaction()
-  .setTokenName("QueueYield Slot (spike)")
+  .setTokenName("Dani.ai Slot (spike)")
   .setTokenSymbol("QYS")
   .setTokenType(TokenType.NonFungibleUnique)
   .setSupplyType(TokenSupplyType.Infinite)
