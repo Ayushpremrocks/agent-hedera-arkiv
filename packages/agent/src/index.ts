@@ -6,7 +6,7 @@
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HttpError, role, serve, sha256, verifyRequest } from "@qy/shared";
-import { createAgent } from "./agent.js";
+import { createAgent, fileStore } from "./agent.js";
 import { Hub } from "./hub.js";
 import { ROLES } from "./workloads.js";
 
@@ -51,6 +51,7 @@ const agent = await createAgent(
     key: me.key,
     label: `${o.as.replace("AGENT_", "")}:${o.role}`,
     role: cfg,
+    store: fileStore(`${dir}/state.json`),
     dir,
     baseUrl: o.url ?? `http://localhost:${port}`,
     names,

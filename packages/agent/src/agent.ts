@@ -45,7 +45,9 @@ export type AgentOptions = {
   key: string; // its private key
   label: string; // short name for logs, e.g. "A:urgent"
   role: Role;
-  dir: string; // state and delivered outputs live here
+  /** Where the agent's working state is kept: a JSON file for the CLI, a database row for the host. */
+  store: Store;
+  dir?: string; // if set, delivered results are also written here as markdown files (the CLI's view)
   baseUrl: string; // where other agents reach this agent's swap endpoint, ending before /offers/...
   names: Record<string, string>; // friendly names for accounts, shared and extended by the agent
   trading?: boolean; // false: book and run jobs, never buy or offer slots
@@ -56,7 +58,25 @@ export type AgentOptions = {
   /** Called before the agent spends `amount` tinybars, so a host can top its account up first. */
   fund?: (amount: bigint) => Promise<void>;
   log?: (line: string) => void;
+  /** Lifecycle of every job, for a host to record (database) and publish (Arkiv). */
+  onTask?: (e: TaskEvent) => void;
 };
+
+export type Store = { load(): Promise<State | null>; save(s: State): void };
+export type TaskEvent =
+  | { kind: "booked"; jobHash: string; label: string; deadline: number; provider: string; providerName: string; serial: number; start: number; price: string; fromUser: boolean }
+  | { kind: "moved"; jobHash: string; serial: number; start: number } // swapped into an earlier slot
+  | { kind: "running"; jobHash: string; serial: number }
+  | { kind: "done"; jobHash: string; serial: number; result: string; resultHash: string; tokens: number; model: string; finishedAt: number; onTime: boolean }
+  | { kind: "failed"; jobHash: string; reason: string };
+
+/** The CLI's store: one JSON file. */
+export function fileStore(path: string): Store {
+  return {
+    load: async () => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null),
+    save: (s) => writeFileSync(path, JSON.stringify(s, null, 2)),
+  };
+}
 
 type JobState = {
   provider: string;
@@ -105,12 +125,18 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   const known = (id: string) => hub.known(id)!;
 
   // ---- state, saved so a restart doesn't forget queued work or listings ----
-  const STATE_FILE = `${opts.dir}/state.json`;
-  mkdirSync(`${opts.dir}/outputs`, { recursive: true });
-  const loaded = existsSync(STATE_FILE) && !opts.fresh ? JSON.parse(readFileSync(STATE_FILE, "utf8")) : null;
+  if (opts.dir) mkdirSync(`${opts.dir}/outputs`, { recursive: true });
+  const loaded = opts.fresh ? null : await opts.store.load();
   const state: State =
     loaded?.v === 3 ? loaded : { v: 3, slots: {}, jobs: {}, listings: {}, stats: { booked: 0, met: 0, late: 0, failed: 0, bought: 0, sold: 0, spent: "0", earned: "0" } };
-  const save = () => writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  const save = () => opts.store.save(state);
+  const emit = (e: TaskEvent) => {
+    try {
+      opts.onTask?.(e);
+    } catch (err) {
+      say(`task hook failed: ${(err as Error).message}`);
+    }
+  };
   const addTo = (k: "spent" | "earned", v: bigint | string) => (state.stats[k] = (BigInt(state.stats[k]) + BigInt(v)).toString());
 
   if (opts.fresh) {
@@ -177,17 +203,22 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         job.status = "failed";
         state.stats.failed++;
         say(`job "${job.label}" expired unrun`);
+        emit({ kind: "failed", jobHash: e.jobHash, reason: "expired before any slot ran it" });
       }
     } else if (e.type === "dispatch") {
       delete state.slots[slotKey(provider, e.serial)];
       const job = e.jobHash ? state.jobs[e.jobHash] : undefined;
-      if (job) Object.assign(job, { status: "running", serial: e.serial });
+      if (job) {
+        Object.assign(job, { status: "running", serial: e.serial });
+        emit({ kind: "running", jobHash: e.jobHash!, serial: e.serial });
+      }
     } else if (state.jobs[e.jobHash]) {
       if (e.ok) toDeliver.push({ provider, ev });
       else {
         Object.assign(state.jobs[e.jobHash], { status: "failed" });
         state.stats.failed++;
         say(`job "${state.jobs[e.jobHash].label}" failed in ${known(provider).name} slot #${e.serial}: ${e.result}`);
+        emit({ kind: "failed", jobHash: e.jobHash, reason: e.result });
       }
     }
     save();
@@ -204,13 +235,17 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     if (sha256(res.body.text) !== done.e.resultHash) throw new Error(`result for "${job.label}" doesn't match the hash on HCS`);
 
     const met = done.ts <= job.deadline;
-    const file = `outputs/${new Date(done.ts * 1000).toISOString().replace(/[:.]/g, "-")}-${job.label.replace(/[^a-z0-9]+/gi, "-").slice(0, 60)}.md`;
-    writeFileSync(
+    let file: string | undefined;
+    if (opts.dir) {
+      file = `outputs/${new Date(done.ts * 1000).toISOString().replace(/[:.]/g, "-")}-${job.label.replace(/[^a-z0-9]+/gi, "-").slice(0, 60)}.md`;
+      writeFileSync(
       `${opts.dir}/${file}`,
       `# ${job.label}\n\nRan on ${p.name} in slot #${done.e.serial}, finished ${new Date(done.ts * 1000).toISOString()}, ` +
         `deadline ${new Date(job.deadline * 1000).toISOString()} (${met ? "on time" : `late by ${done.ts - job.deadline}s`}). ` +
         `${res.body.tokens} tokens from ${res.body.model}. Result sha256 ${done.e.resultHash}, checked against HCS.\n\n${res.body.text}\n`,
-    );
+      );
+    }
+    emit({ kind: "done", jobHash: hash, serial: done.e.serial, result: res.body.text, resultHash: done.e.resultHash!, tokens: res.body.tokens, model: res.body.model, finishedAt: done.ts, onTime: met });
     await locked(async () => {
       Object.assign(job, { status: "done", met, file });
       if (met) state.stats.met++;
@@ -310,6 +345,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       addTo("spent", price);
       save();
     });
+    emit({ kind: "booked", jobHash: hash, label: t.label, deadline: job.deadline, provider: chosen.id, providerName: chosen.name, serial, start, price, fromUser: !!terms.fromUser });
     const fits = start + chosen.slot <= job.deadline;
     say(`booked ${chosen.name} #${serial} (${chosen.model}) for "${t.label}" at ${price} tinybars, starts in ${start - now()}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
     return { provider: chosen.id, providerName: chosen.name, jobHash: hash, serial, start, price, slotSeconds: chosen.slot };
@@ -340,6 +376,11 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
           state.stats.bought++;
           addTo("spent", price);
           save();
+          // The provider runs the earliest-deadline job first, so the bought slot serves the most urgent one.
+          const urgent = Object.entries(state.jobs)
+            .filter(([, j]) => j.provider === provider && j.status === "queued")
+            .sort(([, a], [, b]) => a.deadline - b.deadline)[0];
+          if (urgent) emit({ kind: "moved", jobHash: urgent[0], serial: sellerSerial, start });
           say(`BOUGHT ${p.name} #${sellerSerial} (starts in ${start - now()}s) from ${names[row.seller.value] ?? row.seller.value} for ${price} tinybars, gave #${give.serial}: ${hashscan("transaction", swapTx)}`);
           bought = true;
           break;
@@ -533,7 +574,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         status: j.status,
         slot: j.serial ?? null,
         onTime: j.met ?? null,
-        result: j.file && existsSync(`${opts.dir}/${j.file}`) ? readFileSync(`${opts.dir}/${j.file}`, "utf8").split("\n").slice(4).join("\n").trim() : null,
+        result: opts.dir && j.file && existsSync(`${opts.dir}/${j.file}`) ? readFileSync(`${opts.dir}/${j.file}`, "utf8").split("\n").slice(4).join("\n").trim() : null,
       }))
       .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   }

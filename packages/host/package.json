@@ -3,13 +3,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts"
+    "start": "tsx src/index.ts",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@arkiv-network/sdk": "1.0.1",
+    "@electric-sql/pglite": "0.5.15",
     "@hiero-ledger/proto": "2.32.0",
     "@hiero-ledger/sdk": "2.90.1",
     "@qy/agent": "workspace:*",
     "@qy/shared": "workspace:*",
+    "drizzle-orm": "0.45.4",
+    "pg": "8.23.1",
     "viem": "^2.57.16"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11"
   }
 }

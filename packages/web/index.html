@@ -7,72 +7,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header class="top">
-      <div class="brand">
-        <h1>QueueYield</h1>
-        <p>GPU time for AI agents. Slots are booked with x402, held as Hedera NFTs and traded through Arkiv, so urgent work runs first.</p>
-      </div>
-      <nav class="refs" id="refs" aria-label="On-chain references"></nav>
-      <p class="status" id="status" role="status">Connecting…</p>
-    </header>
-
-    <main>
-      <div class="stats" id="stats" aria-label="From the last 100 log messages"></div>
-      <section class="timeline" aria-labelledby="tl-h">
-        <div class="section-head">
-          <h2 id="tl-h">Schedule</h2>
-          <p>Each block is one 30-second slot on a worker, colored by who holds it. Arcs join slots that swapped owners.</p>
-        </div>
-        <div class="chart-wrap"><svg id="chart" role="img" aria-label="Slot schedule"></svg></div>
-        <ul class="legend" id="legend"></ul>
-      </section>
-
-      <div class="pair">
-        <section aria-labelledby="of-h">
-          <div class="section-head">
-            <h2 id="of-h">Slots for sale</h2>
-            <p>Live <code>qy_offer</code> entities on Arkiv. Each one disappears on its own 15 seconds before its slot starts.</p>
-          </div>
-          <div id="offers"></div>
-        </section>
-
-        <section class="query" aria-labelledby="q-h">
-          <div class="section-head">
-            <h2 id="q-h">Run the buyer's query</h2>
-            <p>The same filter an urgent agent sends to Arkiv. Both deadlines are checked inside the query.</p>
-          </div>
-          <form id="qform">
-            <label>Slot you hold <select id="q-slot"></select></label>
-            <label>Must finish within <span class="unit"><input id="q-within" type="number" min="30" step="10" value="150" /> seconds</span></label>
-            <label>Budget <span class="unit"><input id="q-budget" type="number" min="0" step="0.01" value="0.05" /> HBAR</span></label>
-            <button type="submit">Run query on Arkiv</button>
-          </form>
-          <pre id="q-text" aria-label="Query text">Loading slots…</pre>
-          <p id="q-result" role="status"></p>
-        </section>
-      </div>
-
-      <div class="pair">
-        <section aria-labelledby="tr-h">
-          <div class="section-head">
-            <h2 id="tr-h">Trades</h2>
-            <p><code>qy_trade</code> records on Arkiv, written by sellers. Slots and payment moved in one Hedera transaction.</p>
-          </div>
-          <div id="trades"></div>
-        </section>
-
-        <section aria-labelledby="log-h">
-          <div class="section-head">
-            <h2 id="log-h">Signed log</h2>
-            <p>Latest messages on the HCS topic, newest first.</p>
-          </div>
-          <ol class="log" id="log"></ol>
-        </section>
-      </div>
-    </main>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

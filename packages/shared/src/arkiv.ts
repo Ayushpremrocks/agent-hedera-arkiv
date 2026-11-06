@@ -79,3 +79,26 @@ export function findProviders(reader: ReturnType<typeof arkivReader>, model?: st
   const q = reader.select().from(ProviderProfile);
   return (model ? q.where(eq("model", model)) : q).orderBy(asc("price_now")).limit(100).fetch();
 }
+
+// ---- the app's public records: written by the host and its agents, readable and verifiable by anyone ----
+
+/** Which agent works for which wallet. Written by the host, so `$owner` is the host's key. */
+export const AgentRecord = defineSchema("qy_agent", {
+  owner: str().indexed(), // the user's wallet account
+  agent: str().indexed(), // the agent's Hedera account
+  created_at: u64(),
+});
+
+/** One task's public trail. Written by the agent that ran it; inputs and results stay private. */
+export const TaskRecord = defineSchema("qy_task", {
+  owner: str().indexed(),
+  agent: str().indexed(),
+  job_hash: str().indexed(), // sha256 of the job, the same hash the provider logs on HCS
+  status: str().indexed(), // queued | running | done | failed
+  deadline: u64().indexed(),
+  provider: str().indexed(),
+  serial: u64(),
+  result_hash: str(), // sha256 of the result, matching the provider's signed `done` event
+  on_time: str(), // "yes" | "no" | ""
+  finished_at: u64(),
+});

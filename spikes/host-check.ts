@@ -62,8 +62,13 @@ expect("task booked through the host", submitted.status === 200, `${submitted.bo
 const wait = (submitted.body.start + 30) * 1000 - Date.now() + 25_000;
 console.log(`waiting ${Math.round(wait / 1000)}s for the slot to run and the result to arrive...`);
 await new Promise((r) => setTimeout(r, Math.max(0, wait)));
-const tasks = (await api("/api/tasks", { token })).body.tasks;
-const t = tasks.find((x: any) => x.label === "host check");
+const listed = (await api("/api/tasks", { token })).body.tasks.find((x: any) => x.jobHash === submitted.body.jobHash);
+expect("task listed from the database", !!listed, listed?.status);
+const t = (await api(`/api/tasks/${submitted.body.jobHash}`, { token })).body.task;
 expect("result delivered and checked", t?.status === "done" && !!t.result, t ? `${t.status}, ${t.onTime ? "on time" : "late"}: ${String(t.result).slice(0, 80)}` : "missing");
+expect("private record keeps the instruction", t?.task === "Answer in one sentence.");
+expect("public record mirrored to Arkiv", !!t?.arkivKey, t?.arkivKey);
+const peek = await api(`/api/tasks/${submitted.body.jobHash}`, { token: "0.0.1.9999999999.forged" });
+expect("another session can't read it (401)", peek.status === 401);
 const after = (await api("/api/me", { token })).body.agent;
 expect("the agent drew on the allowance", BigInt(after.allowance) < BigInt(me.body.agent.allowance), `${Number(after.allowance) / 1e8} HBAR left`);

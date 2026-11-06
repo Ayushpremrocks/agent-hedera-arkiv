@@ -2,5 +2,6 @@ packages:
   - packages/*
   - spikes
 allowBuilds:
+  "@reown/appkit": false
   esbuild: true
   protobufjs: false
