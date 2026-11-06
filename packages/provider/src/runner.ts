@@ -86,7 +86,8 @@ export async function calibrate(workers: number): Promise<{ tps: number; startup
   const t1 = Date.now();
   await runJob({ kind: "llm", task: "Reply with OK.", input: "ping", maxTokens: 1, deadline: 0, label: "calibrate" }, 60_000);
   const shortStartupMs = Date.now() - t1;
-  const long = { kind: "llm" as const, task: "Write a long story about a lighthouse keeper. Keep going.", input: "Begin.", maxTokens: 160, deadline: 0, label: "calibrate" };
+  // Long outputs: generation slows as the output grows, so short samples would overstate the speed of big jobs.
+  const long = { kind: "llm" as const, task: "Write a long story about a lighthouse keeper. Keep going.", input: "Begin.", maxTokens: 640, deadline: 0, label: "calibrate" };
   // Speed varies run to run on a shared GPU: promise on the slowest of a few rounds.
   const runs: number[] = [];
   for (let round = 0; round < 3; round++)
