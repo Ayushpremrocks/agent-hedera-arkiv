@@ -1,7 +1,8 @@
-// Run N agents together against the live provider, then report how many deadlines were met.
+// Run N agents together against every live provider, then report how many deadlines were met.
 //
 //   pnpm fleet --agents 3 --minutes 8              agents trade slots
 //   pnpm fleet --agents 3 --minutes 8 --no-trade   baseline: same workloads, no trading
+//   pnpm fleet --agents 5 --offset 5 --host 192.168.1.20   a second laptop: agents F..J, reachable on the LAN
 //
 // Agents are AGENT_A, AGENT_B, ... from .env (create more with `pnpm setup:accounts --agents N`).
 // Roles cycle through --mix. Each agent stops taking work after --minutes, finishes what it booked,
@@ -10,8 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { eq } from "@arkiv-network/sdk/query";
-import { ProviderProfile, arkivReader, need, readEvents } from "@qy/shared";
+import { arkivReader, findProviders, readEvents } from "@qy/shared";
 import { ROLES } from "./workloads.js";
 
 const { values: o } = parseArgs({
@@ -20,6 +20,8 @@ const { values: o } = parseArgs({
     minutes: { type: "string", default: "8" },
     mix: { type: "string", default: "urgent,digest,report" },
     "no-trade": { type: "boolean", default: false },
+    offset: { type: "string", default: "0" }, // skip this many agents (so two laptops run different ones)
+    host: { type: "string" }, // this machine's LAN address, so agents on other machines can reach ours
   },
 });
 const mix = o.mix!.split(",");
@@ -30,20 +32,24 @@ const available = Object.keys(process.env)
   .filter((x): x is string => !!x)
   .sort();
 const n = Number(o.agents);
-if (available.length < n) throw new Error(`only ${available.length} agents in .env; run pnpm setup:accounts --agents ${n}`);
+const offset = Number(o.offset);
+if (available.length < offset + n) throw new Error(`only ${available.length} agents in .env; run pnpm setup:accounts --agents ${offset + n}`);
 
-// Fail fast if the provider isn't up, rather than report an empty run.
-const profile = (await arkivReader().select().from(ProviderProfile).where(eq("provider", need("PROVIDER_ID"))).limit(1).fetch()).entities[0];
-await fetch(profile.booking_url.value).catch(() => {
-  throw new Error(`provider not reachable at ${profile.booking_url.value}; start it with pnpm provider`);
-});
+// Fail fast if no provider is up, rather than report an empty run.
+const providers = (await findProviders(arkivReader())).entities;
+const reachable = [];
+for (const p of providers) if (await fetch(p.booking_url.value).then(() => true, () => false)) reachable.push(p);
+if (!reachable.length) throw new Error("no live provider is reachable; start one with pnpm provider");
+console.log(`providers: ${reachable.map((p) => `${p.name.value} (${p.model.value}) at ${p.booking_url.value}`).join(", ")}`);
 
 const agentEntry = fileURLToPath(new URL("./index.ts", import.meta.url));
 const startedAt = Math.floor(Date.now() / 1000);
 const stats: any[] = [];
 
-const runs = available.slice(0, n).map((letter, i) => {
-  const args = ["--as", `AGENT_${letter}`, "--role", mix[i % mix.length], "--port", String(4101 + i), "--minutes", o.minutes!, "--fresh"];
+const runs = available.slice(offset, offset + n).map((letter, i) => {
+  const port = 4101 + offset + i;
+  const args = ["--as", `AGENT_${letter}`, "--role", mix[(offset + i) % mix.length], "--port", String(port), "--minutes", o.minutes!, "--fresh"];
+  if (o.host) args.push("--url", `http://${o.host}:${port}`);
   if (o["no-trade"]) args.push("--no-trade");
   const child = spawn(process.execPath, ["--import", "tsx", agentEntry, ...args], { stdio: ["ignore", "pipe", "pipe"] });
   const onLine = (buf: Buffer) => {
@@ -62,13 +68,14 @@ process.on("SIGINT", () => process.exit(130)); // children get the signal too
 await Promise.all(runs);
 
 // ---- summary: agent stats, cross-checked with the signed log ----
-const topicId = profile.topic_id.value;
 const log = [];
-for (let seq = 0, batch; ; ) {
-  batch = await readEvents(topicId, seq, 100);
-  if (!batch.length) break;
-  log.push(...batch.filter((x) => x.ts >= startedAt));
-  seq = batch.at(-1)!.seq;
+for (const topicId of new Set(reachable.map((p) => p.topic_id.value))) {
+  for (let seq = 0, batch; ; ) {
+    batch = await readEvents(topicId, seq, 100);
+    if (!batch.length) break;
+    log.push(...batch.filter((x) => x.ts >= startedAt));
+    seq = batch.at(-1)!.seq;
+  }
 }
 const delivered = log.filter((x) => x.e.type === "delivered");
 const trades = log.filter((x) => x.e.type === "trade");

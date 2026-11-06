@@ -8,12 +8,19 @@ import { privateKeyToAccount } from "viem/accounts";
 // Named schemas tag each entity with arkiv.schema, which replaces the plan's type="qy_*" field.
 // Prices are tinybars (HBAR is the x402 asset), times are unix seconds.
 
+// A provider's live offer, like a Golem Offer: what it runs and when it's free. The provider renews it
+// every few seconds with a short expiry, so a provider that goes offline drops out of the market.
 export const ProviderProfile = defineSchema("qy_provider", {
   provider: str().indexed(), // Hedera account id
+  name: str(),
   token_id: str(),
   topic_id: str(),
   slot_seconds: u64(),
   booking_url: str(),
+  model: str().indexed(),
+  workers: u64(),
+  price_now: u64().indexed(), // current booking price, tinybars
+  next_free: u64().indexed(), // earliest start with a free worker, unix seconds
 });
 
 export const SlotOffer = defineSchema("qy_offer", {
@@ -65,4 +72,10 @@ export function offerFilter(provider: string, w: Want) {
 
 export function findOffers(reader: ReturnType<typeof arkivReader>, provider: string, w: Want) {
   return reader.select().from(SlotOffer).where(offerFilter(provider, w)).orderBy(asc("min_price")).limit(20).fetch();
+}
+
+/** Live provider profiles, cheapest first; optionally only those running `model`. Rows are claims: check `$owner`. */
+export function findProviders(reader: ReturnType<typeof arkivReader>, model?: string) {
+  const q = reader.select().from(ProviderProfile);
+  return (model ? q.where(eq("model", model)) : q).orderBy(asc("price_now")).limit(100).fetch();
 }

@@ -36,7 +36,7 @@ import {
 import { ensureInfra, issueSlot } from "./chain.js";
 import { LLM_BASE_URL, LLM_MODEL, runJob, warmUp } from "./runner.js";
 import { bookingPrice } from "./pricing.js";
-import { clearQueue, dequeue, enqueue, loadResult, nextJob, paid, queues, savePaid, saveResult } from "./store.js";
+import { PROVIDER_NAME, clearQueue, dequeue, enqueue, loadResult, nextJob, paid, queues, savePaid, saveResult } from "./store.js";
 
 const PORT = Number(process.env.PROVIDER_PORT ?? 4000);
 const BOOKING_URL = process.env.PROVIDER_URL ?? `http://localhost:${PORT}`;
@@ -52,8 +52,8 @@ const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 600); // drop queued j
 const MAX_QUEUE = 20; // queued jobs per account; bookings are paid, this just bounds memory
 const KILL_MARGIN_MS = 1500; // a job is killed this long before its slot ends, so the next slot starts on a free worker
 
-const P = role("PROVIDER");
-const T = role("TREASURY");
+const P = role(PROVIDER_NAME);
+const T = role(PROVIDER_NAME === "PROVIDER" ? "TREASURY" : `${PROVIDER_NAME}_TREASURY`);
 const client = hederaClient(P.id, P.key);
 const { tokenId, topicId } = await ensureInfra(client, P, T);
 console.log(`provider ${P.id}  token ${hashscan("token", tokenId)}  topic ${hashscan("topic", topicId)}`);
@@ -103,10 +103,16 @@ function price(): bigint {
   return bookingPrice(booked, Math.ceil((end - now()) / SLOT_SECONDS) * WORKERS, PRICE_FLOOR);
 }
 
-/** Reserve the earliest start with a free worker. Synchronous, so concurrent bookings can't collide. */
-function reserve(): number {
+/** Earliest bookable start with a free worker. */
+function nextFree(): number {
   let start = Math.ceil((now() + LEAD_SECONDS) / SLOT_SECONDS) * SLOT_SECONDS;
   while ((slots.get(start)?.length ?? 0) >= WORKERS) start += SLOT_SECONDS;
+  return start;
+}
+
+/** Reserve the earliest start with a free worker. Synchronous, so concurrent bookings can't collide. */
+function reserve(): number {
+  const start = nextFree();
   place(start, null);
   return start;
 }
@@ -234,7 +240,7 @@ await serve(PORT, {
     if (!payload || BigInt(payload.accepted?.amount ?? 0) < quote) {
       // Price may have risen since the client's quote: no settle happened, so just quote again.
       const required = await x402.createPaymentRequiredResponse(await requirements(quote), { url: `${BOOKING_URL}/book` });
-      return { status: 402, body: { error: "payment required", price: quote.toString(), floor: PRICE_FLOOR.toString() }, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } };
+      return { status: 402, body: { error: "payment required", price: quote.toString(), floor: PRICE_FLOOR.toString(), nextFree: nextFree() }, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } };
     }
 
     // Queue synchronously so a parallel /book of the same job gets 409 and can't double-pay.
@@ -303,16 +309,41 @@ await serve(PORT, {
 });
 console.log(`listening on ${BOOKING_URL}`);
 
-// Publish (or refresh) the provider profile on Arkiv so agents can discover token, topic and URL.
+// Advertise on Arkiv, like a Golem Offer: identity, model, capacity, current price, next free start.
+// Renewed every PROFILE_REFRESH seconds with a short expiry, so if this provider stops, its offer
+// lapses on its own and agents stop sending it work.
+const PROFILE_REFRESH = Number(process.env.PROFILE_REFRESH_SECONDS ?? 30);
+const PROFILE_TTL = 10 * 60;
 const writer = arkivWriter(evmKey(P.key));
-const profile = { provider: P.id, token_id: tokenId, topic_id: topicId, slot_seconds: u64(SLOT_SECONDS), booking_url: BOOKING_URL };
-const existing = (
-  await arkivReader().select({ $key: true }).from(ProviderProfile).where(eq("provider", P.id)).ownedBy(writer.account.address).limit(1).fetch()
-).entities[0];
-if (existing) {
-  await writer.patchEntity(ProviderProfile, existing.$key, { set: profile });
-  await writer.extendEntity({ entityKey: existing.$key, expiration: ExpirationTime.fromDays(7) });
-} else {
-  await writer.createEntity(ProviderProfile, profile, { expiration: ExpirationTime.fromDays(7) });
+const profile = () => ({
+  provider: P.id,
+  name: process.env.PROVIDER_LABEL ?? PROVIDER_NAME,
+  token_id: tokenId,
+  topic_id: topicId,
+  slot_seconds: u64(SLOT_SECONDS),
+  booking_url: BOOKING_URL,
+  model: LLM_MODEL,
+  workers: u64(WORKERS),
+  price_now: u64(price()),
+  next_free: u64(nextFree()),
+});
+// Start from a fresh entity: Arkiv refuses to move an expiry earlier, so an old long-lived profile
+// couldn't be put on the short renew-or-lapse lifetime.
+const old = await arkivReader().select({ $key: true }).from(ProviderProfile).where(eq("provider", P.id)).ownedBy(writer.account.address).fetch();
+for (const e of old.entities) await writer.deleteEntity({ entityKey: e.$key }).catch(() => {});
+let profileKey: `0x${string}` | undefined;
+async function advertise() {
+  if (profileKey) {
+    try {
+      await writer.patchEntity(ProviderProfile, profileKey, { set: profile() });
+      await writer.extendEntity({ entityKey: profileKey, expiration: ExpirationTime.fromSeconds(PROFILE_TTL) });
+      return;
+    } catch (e) {
+      console.error(`profile ${profileKey} could not be renewed (${(e as Error).message}); creating a new one`);
+    }
+  }
+  profileKey = (await writer.createEntity(ProviderProfile, profile(), { expiration: ExpirationTime.fromSeconds(PROFILE_TTL) })).entityKey;
 }
-console.log("provider profile on Arkiv:", existing ? `updated ${existing.$key}` : "created");
+await advertise();
+console.log(`provider profile on Arkiv: ${profileKey} (${LLM_MODEL}, ${WORKERS} workers, refreshed every ${PROFILE_REFRESH}s)`);
+setInterval(() => advertise().catch((e) => console.error("Arkiv profile refresh failed:", e.message)), PROFILE_REFRESH * 1000);

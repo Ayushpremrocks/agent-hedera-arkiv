@@ -1,6 +1,7 @@
 // Creates PROVIDER, TREASURY and AGENT_A, AGENT_B, ... testnet accounts funded from the operator,
 // appends them to .env, and shares the operator's Arkiv tGLM with the roles that write to Arkiv.
-// Safe to re-run; `--agents N` adds agents up to N (default 3).
+// Safe to re-run; `--agents N` adds agents up to N (default 3), `--providers N` adds providers
+// PROVIDER_2..PROVIDER_N (each with its own treasury) for running several on one or more laptops.
 import { AccountCreateTransaction, Hbar, PrivateKey } from "@hiero-ledger/sdk";
 import { appendFileSync } from "node:fs";
 import { formatEther } from "viem";
@@ -8,11 +9,18 @@ import { ENV_PATH, arkivReader, arkivWriter, evmKey, hederaClient, need } from "
 import { privateKeyToAccount } from "viem/accounts";
 import { parseArgs } from "node:util";
 
-const agents = Number(parseArgs({ options: { agents: { type: "string", default: "3" } } }).values.agents);
+const args = parseArgs({ options: { agents: { type: "string", default: "3" }, providers: { type: "string", default: "1" } } }).values;
+const agents = Number(args.agents);
+const providers = Number(args.providers);
 if (!(agents >= 1 && agents <= 26)) throw new Error("--agents must be 1..26");
+if (!(providers >= 1 && providers <= 20)) throw new Error("--providers must be 1..20");
 const AGENT_NAMES = Array.from({ length: agents }, (_, i) => `AGENT_${String.fromCharCode(65 + i)}`);
-const ROLES: Record<string, number> = { PROVIDER: 40, TREASURY: 10, ...Object.fromEntries(AGENT_NAMES.map((n) => [n, 30])) };
-const ARKIV_ROLES = ["PROVIDER", ...AGENT_NAMES];
+const PROVIDER_NAMES = Array.from({ length: providers }, (_, i) => (i === 0 ? "PROVIDER" : `PROVIDER_${i + 1}`));
+const ROLES: Record<string, number> = {
+  ...Object.fromEntries(PROVIDER_NAMES.flatMap((p) => [[p, 40], [p === "PROVIDER" ? "TREASURY" : `${p}_TREASURY`, 10]])),
+  ...Object.fromEntries(AGENT_NAMES.map((n) => [n, 30])),
+};
+const ARKIV_ROLES = [...PROVIDER_NAMES, ...AGENT_NAMES];
 
 const opId = need("HEDERA_OPERATOR_ID");
 const opKey = need("HEDERA_OPERATOR_KEY");

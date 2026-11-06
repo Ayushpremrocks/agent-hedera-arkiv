@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Job payloads and results stay private on the provider's disk; only their hashes go on-chain.
-export const DATA_DIR = fileURLToPath(new URL("../../../data/provider", import.meta.url));
+// One folder per provider, so several can run on one machine (PROVIDER keeps its original folder).
+export const PROVIDER_NAME = process.env.PROVIDER_NAME ?? "PROVIDER";
+export const DATA_DIR = fileURLToPath(new URL(`../../../data/${PROVIDER_NAME.toLowerCase().replace(/_/g, "-")}`, import.meta.url));
 const QUEUE_FILE = `${DATA_DIR}/jobs.json`;
 const RESULTS_DIR = `${DATA_DIR}/results`;
 
