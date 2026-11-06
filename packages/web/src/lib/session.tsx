@@ -1,7 +1,8 @@
 // Who's signed in, and the API client that carries their session. Sign-in: HashPack connects, the host
 // issues a one-time message, the wallet signs it, the host returns a session token.
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
-import { connect, disconnect, signMessage } from "./wallet";
+// The wallet SDKs are large: load them only when someone signs in or out.
+const wallet = () => import("./wallet");
 
 const store = {
   get: (k: string) => {
@@ -42,7 +43,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     store.set("qy-account", null);
     setToken(null);
     setAccount(null);
-    disconnect();
+    wallet().then((w) => w.disconnect());
   }, []);
 
   const api = useCallback(
@@ -63,6 +64,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(
     async (onStep: (step: string) => void = () => {}) => {
       onStep("Approve the connection in HashPack…");
+      const { connect, signMessage } = await wallet();
       const acct = await connect();
       onStep("Sign the sign-in message in HashPack (it costs nothing)…");
       const { message } = await api<{ message: string }>("/auth/challenge", { account: acct });

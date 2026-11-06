@@ -4,11 +4,10 @@ import { render } from "@arkiv-network/sdk/query";
 import { arkivReader, findOffers, offerFilter } from "@qy/shared/arkiv";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Notice, Section, Stats, Who } from "../components/ui";
+import { Notice, PageHeader, Section, Stats, Who } from "../components/ui";
 import { clock, hashscan, hbar, inHuman, shortClock } from "../lib/format";
 import { type LogEvent, type Provider, type QueueEntry, fetchLog, fetchOffers, fetchQueues, fetchTrades } from "../lib/market";
 
-declare const __AGENT_NAMES__: Record<string, string>;
 const PAST = 120;
 const AHEAD = 240;
 const NOT_BEFORE_SECONDS = 45; // CUTOFF_SECONDS + SWAP_VALID_SECONDS in shared/src/swap.ts
@@ -40,7 +39,7 @@ export function Market() {
 
   const names = useMemo(() => {
     const n: Record<string, string> = {};
-    for (const [id, letter] of Object.entries(__AGENT_NAMES__)) n[id] = `Agent ${letter}`;
+    // Agents are anonymous accounts; only providers have names.
     for (const p of list) n[p.id] = p.name;
     return n;
   }, [list]);
@@ -55,12 +54,10 @@ export function Market() {
 
   return (
     <>
-      <div className="page-header">
-        <div>
-          <h1>Network status</h1>
-          <p>The open market behind QueueYield, read live from Hedera and Arkiv: providers, scheduled GPU time, priority trades and every signed event.</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Network status"
+        intro="The open market behind QueueYield, read live from Hedera and Arkiv: providers and their promises, queues, places offered and traded, and every signed event."
+      />
       <Notice text={error?.message} kind="error" />
       <Stats
         items={[

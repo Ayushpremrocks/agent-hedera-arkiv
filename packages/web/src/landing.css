@@ -1,0 +1,153 @@
+/* Landing + 404 (see DESIGN.md). Width axis of Archivo is the hierarchy: wide display, condensed labels.
+   Motion verb: "land before the line": things slide along x and settle short of a mark. */
+::selection { background: var(--now); color: #111; }
+.skip { position: absolute; left: 16px; top: -48px; z-index: 10; background: var(--now); color: #111; padding: 8px 14px; border-radius: 999px; font-weight: 700; text-decoration: none; transition: top 180ms var(--ease); }
+.skip:focus { top: 12px; }
+:focus-visible { outline: 2px solid var(--now); outline-offset: 3px; }
+
+.ql { --gut: clamp(16px, 4vw, 48px); max-width: 1320px; margin: 0 auto; padding: 0 var(--gut); }
+.ql h1, .ql h2, .ql h3 { font-stretch: 125%; font-weight: 800; letter-spacing: -0.035em; color: var(--ink); text-wrap: balance; }
+.ql p { color: var(--ink-2); font-size: 1.0625rem; line-height: 1.55; }
+
+/* ---- top bar ---- */
+.ql-top { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+.ql-logo { display: inline-block; padding: 6px 0; font-weight: 800; font-stretch: 125%; font-size: 1.25rem; letter-spacing: -0.03em; text-decoration: none; transition: font-stretch 420ms var(--ease), letter-spacing 420ms var(--ease); }
+.ql-logo:hover { font-stretch: 100%; letter-spacing: 0; }
+.ql-top nav { display: flex; align-items: center; gap: 8px; }
+/* Nav: the type changes axis and an underline draws, left to right. */
+.ql-nav { position: relative; font: inherit; font-weight: 600; font-size: 0.9375rem; font-stretch: 100%; color: var(--ink); background: none; border: 0; padding: 10px 12px; text-decoration: none; cursor: pointer; border-radius: 0; transition: font-stretch 420ms var(--ease); }
+.ql-nav::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 6px; height: 1px; background: var(--now); transform: scaleX(0); transform-origin: left; transition: transform 420ms var(--ease); }
+.ql-nav:hover { font-stretch: 125%; background: none; }
+.ql-nav:hover::after, .ql-nav:focus-visible::after { transform: scaleX(1); }
+
+/* ---- hero ---- */
+.ql-hero { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); gap: 32px 48px; align-items: end; padding: clamp(32px, 8vh, 96px) 0 clamp(24px, 4vh, 40px); }
+.ql-hero h1 { font-size: clamp(2.6rem, 6.4vw, 6.2rem); line-height: 0.94; margin: 0 0 0 -0.04em; }
+.ql-hero-side p { margin: 0 0 22px; max-width: 46ch; }
+@media (prefers-reduced-motion: no-preference) {
+  .ql-hero h1, .ql-hero-side { animation: land 900ms var(--ease) both; }
+  .ql-hero-side { animation-delay: 80ms; }
+  .lanes { animation: land 900ms 160ms var(--ease) both; }
+}
+@keyframes land { from { opacity: 0; translate: -28px 0; } to { opacity: 1; translate: 0 0; } }
+
+/* Primary button: amber pill; the label rolls up and its copy lands in its place. */
+.cta { display: inline-flex; align-items: center; height: 52px; padding: 0 26px; border-radius: 999px; background: var(--now); color: #121212; font-weight: 700; font-size: 1rem; border: 0; cursor: pointer; transition: background 180ms var(--ease), scale 180ms var(--ease); }
+.cta:hover { background: #ffc340; }
+.cta:active:not(:disabled) { scale: 0.97; }
+.cta:disabled { opacity: 0.7; cursor: progress; }
+.roll { position: relative; display: inline-block; overflow: hidden; line-height: 1.3; }
+.roll > span, .roll::after { display: block; transition: translate 420ms var(--ease); }
+.roll::after { content: attr(data-text); position: absolute; inset: 0; translate: 0 110%; }
+.cta:hover .roll > span, .cta:focus-visible .roll > span { translate: 0 -110%; }
+.cta:hover .roll::after, .cta:focus-visible .roll::after { translate: 0 0; }
+
+/* ---- the lanes (signature) ---- */
+.lanes { margin: 0 calc(var(--gut) * -1); padding: 18px var(--gut) 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); background: linear-gradient(180deg, rgba(255, 176, 0, 0.035), transparent 60%); }
+.lanes svg { display: block; width: 100%; height: auto; overflow: visible; }
+.lanes figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 14px 0 18px; color: var(--ink-2); font-size: 0.8125rem; font-stretch: 85%; }
+.lanes figcaption .key { width: 22px; height: 12px; border-radius: 3px; display: inline-block; margin-left: 8px; }
+.lanes figcaption .key:first-child { margin-left: 0; }
+.key-ghost { border: 1px dashed rgba(232, 236, 240, 0.45); }
+.key-tick { width: 2px !important; height: 16px !important; border-left: 2px dashed var(--now); border-radius: 0 !important; }
+.key-bar { background: var(--ink); }
+.lanes-note { margin-left: auto; color: var(--ink-3); }
+.ln-lane { stroke: var(--rule); stroke-width: 1; }
+.ln-lane-label { fill: var(--ink-3); font-size: 12px; font-stretch: 85%; }
+.ln-now { stroke: var(--now); stroke-width: 2; }
+.ln-now-label { fill: var(--now); font-size: 12px; font-weight: 700; }
+.ln-ghost { fill: none; stroke: rgba(232, 236, 240, 0.4); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.ln-bar { fill: var(--ink); }
+.ln-started .ln-ghost { stroke: rgba(232, 236, 240, 0.16); }
+.ln-tick { stroke: var(--now); stroke-width: 2; stroke-dasharray: 3 3; }
+.ln-tick-label { fill: var(--now); font-size: 11px; font-weight: 700; font-stretch: 80%; }
+.ln-started .ln-tick-label { fill: var(--kept); }
+.ln-started .ln-tick { stroke: var(--kept); opacity: 0.7; }
+
+/* ---- the promise ---- */
+.promise { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: 48px; padding: clamp(64px, 12vh, 140px) 0; }
+.promise h2 { font-size: clamp(2rem, 4vw, 3.4rem); line-height: 0.98; margin-bottom: 22px; }
+.promise-copy p { max-width: 56ch; }
+.formula { font-stretch: 112%; font-weight: 600; color: var(--ink) !important; font-size: clamp(1.1rem, 2vw, 1.45rem) !important; padding: 18px 0; margin: 24px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.formula span { color: var(--now); }
+.promise-live h3 { font-size: 0.875rem; font-stretch: 85%; letter-spacing: 0; font-weight: 700; color: var(--ink-2); margin: 6px 0 14px; }
+.promise-live ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.promise-live li { background: var(--card); border: 1px solid var(--rule); border-radius: var(--radius); padding: 18px 20px; }
+.pl-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px; }
+.pl-head b { font-stretch: 112%; font-size: 1.05rem; }
+.pl-head span { color: var(--ink-3); font-size: 0.8125rem; }
+.promise-live dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.promise-live dt { color: var(--ink-3); font-size: 0.75rem; font-stretch: 85%; }
+.promise-live dd { margin: 2px 0 0; font-weight: 700; font-size: 1.05rem; color: var(--ink); }
+
+/* ---- when the deadline is tight: a real sequence, so numbered ---- */
+.hurry { padding: 0 0 clamp(64px, 12vh, 140px); }
+.hurry h2 { font-size: clamp(2rem, 4vw, 3.4rem); margin-bottom: 28px; }
+.hurry ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.hurry li { position: relative; display: grid; grid-template-columns: 80px minmax(0, 5fr) minmax(0, 6fr); gap: 24px; align-items: baseline; padding: 26px 0; border-bottom: 1px solid var(--rule-strong); }
+.hurry li::before { content: ""; position: absolute; left: 0; bottom: -1px; height: 1px; width: 100%; background: var(--now); transform: scaleX(0); transform-origin: left; transition: transform 900ms var(--ease); }
+.hurry li:hover::before { transform: scaleX(1); }
+.hurry-n { font-stretch: 125%; font-weight: 800; font-size: 2rem; color: var(--now); transition: translate 420ms var(--ease); }
+.hurry li:hover .hurry-n { translate: 10px 0; }
+.hurry h3 { font-size: clamp(1.15rem, 1.8vw, 1.5rem); letter-spacing: -0.02em; }
+.hurry p { margin: 0; }
+
+/* ---- reserve ahead: a field band ---- */
+.ahead { margin: 0 calc(var(--gut) * -1); padding: clamp(48px, 9vh, 96px) var(--gut); background: var(--now); display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 32px; align-items: end; }
+.ahead h2 { color: #121212 !important; font-size: clamp(2rem, 4.4vw, 3.8rem); line-height: 0.96; }
+.ahead p { color: #2b2210 !important; margin: 0; max-width: 46ch; }
+
+/* ---- signed board ---- */
+.board { padding: clamp(64px, 12vh, 140px) 0; display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 7fr); gap: 24px 48px; }
+.board h2 { font-size: clamp(2rem, 3.6vw, 3rem); line-height: 0.98; margin-bottom: 16px; }
+.board-rows { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); min-height: 340px; grid-row: span 2; }
+.board-rows li { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) auto; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--rule); font-size: 0.9375rem; }
+.board-rows time { color: var(--now); font-weight: 600; }
+.board-prov { color: var(--ink-3); font-stretch: 85%; }
+.board-empty { color: var(--ink-3); display: block !important; }
+.arrow-link { display: inline-flex; gap: 10px; align-items: center; font-weight: 700; text-decoration: none; padding: 10px 0; align-self: start; }
+.arrow-link span:first-child { background: linear-gradient(var(--now), var(--now)) 0 100% / 0 1px no-repeat; transition: background-size 420ms var(--ease); }
+.arrow-link:hover span:first-child, .arrow-link:focus-visible span:first-child { background-size: 100% 1px; }
+.arrow-link .arrow { color: var(--now); transition: translate 420ms var(--ease); }
+.arrow-link:hover .arrow { translate: 8px 0; }
+
+/* ---- footer: a final composition ---- */
+.ql-foot { border-top: 1px solid var(--rule); padding: 28px 0 32px; }
+.ql .ql-foot-mark { margin: 0; font-weight: 800; font-stretch: 125%; letter-spacing: -0.05em; line-height: 0.82; font-size: clamp(3.4rem, 15.5vw, 15rem); color: var(--ink) !important; white-space: nowrap; overflow: hidden; }
+.ql-foot-row { display: flex; justify-content: space-between; gap: 24px; align-items: end; padding-top: 22px; }
+.ql-foot-row p { margin: 0; font-size: 0.875rem !important; max-width: 60ch; }
+.ql-foot-row nav { display: flex; gap: 20px; align-items: center; font-weight: 600; font-size: 0.9375rem; }
+.ql-foot-row nav a, .ql-foot-row .link-button { color: var(--ink-2); text-decoration: none; font-size: 0.9375rem; padding: 8px 0; }
+.ql-foot-row nav a:hover, .ql-foot-row .link-button:hover { color: var(--ink); }
+
+/* ---- 404 ---- */
+.ql-404 main { min-height: 100dvh; display: grid; align-content: center; gap: 10px; max-width: 720px; }
+.ql-404 h1 { font-size: clamp(2.2rem, 5.6vw, 4.6rem); line-height: 0.96; }
+.nf-lane { width: min(600px, 100%); height: auto; margin-bottom: 12px; }
+
+/* ---- page transitions (React Router viewTransition): the old page slides left, the new one lands ---- */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) { animation: 260ms var(--ease) both vt-out; }
+  ::view-transition-new(root) { animation: 520ms var(--ease) both vt-in; }
+}
+@keyframes vt-out { to { opacity: 0; translate: -32px 0; } }
+@keyframes vt-in { from { opacity: 0; translate: 32px 0; } }
+
+/* ---- phone (composed for 390px) ---- */
+@media (max-width: 860px) {
+  .ql-hero, .promise, .board, .ahead { grid-template-columns: 1fr; }
+  .ql-hero h1 br { display: none; }
+  .promise-live dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hurry li { grid-template-columns: 44px minmax(0, 1fr); }
+  .hurry li p { grid-column: 2; }
+  .board-rows li { grid-template-columns: 5.6em minmax(0, 1fr); }
+  .board-prov { display: none; }
+  .lanes-note { margin-left: 0; flex-basis: 100%; }
+  .ql-foot-row { flex-direction: column; align-items: start; }
+}
+@media (max-width: 520px) {
+  /* Phone: the same replay, cropped to the stretch around "now" instead of shrunk to hairlines. */
+  .lanes svg { height: 250px; }
+  .ql-top { padding: 14px 0; }
+  .ql-nav { padding: 10px 8px; }
+}

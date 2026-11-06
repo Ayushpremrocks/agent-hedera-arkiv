@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router";
+import { useParams } from "react-router";
 import { motion, useReducedMotion } from "motion/react";
 import { CopyButton, Dots, Skeleton } from "../components/motion";
-import { Card, Notice, PageHeader, StatusBadge } from "../components/ui";
+import { Notice, PageHeader, PromiseTrack, StatusBadge } from "../components/ui";
 import { clock, hashscan, hbar } from "../lib/format";
 import { useSession } from "../lib/session";
 
@@ -45,16 +45,10 @@ export function TaskDetail() {
   });
   if (q.isPending)
     return (
-      <div className="detail-grid" aria-busy>
-        <div className="card skeleton-rows">
-          <Skeleton h={18} w="30%" />
-          <Skeleton h={90} />
-        </div>
-        <div className="card skeleton-rows">
-          <Skeleton h={18} w="40%" />
-          <Skeleton h={14} />
-          <Skeleton h={14} w="80%" />
-        </div>
+      <div className="stack-lg" aria-busy>
+        <Skeleton h={34} w="40%" />
+        <Skeleton h={56} />
+        <Skeleton h={220} />
       </div>
     );
   if (q.isError) return <Notice text={q.error.message} kind="error" />;
@@ -65,7 +59,7 @@ export function TaskDetail() {
   // A plain-language history, built from what the record says happened.
   const steps: { when?: number; text: string; state: "done" | "now" | "todo" }[] = [
     { when: created, text: `Booked on ${t.providerName ?? "a provider"} for ${hbar(t.price)}`, state: "done" },
-    ...(t.rushPaid ? [{ text: `Moved ahead in the queue: paid another agent ${hbar(t.rushPaid)} to finish on time`, state: "done" as const }] : []),
+    ...(t.rushPaid ? [{ text: `Moved ahead: paid another agent ${hbar(t.rushPaid)} to finish on time`, state: "done" as const }] : []),
     {
       when: t.start ?? undefined,
       text: t.status === "queued" ? `Guaranteed to start by ${t.start ? clock(t.start) : "its turn in the queue"} (or refunded)` : "Ran on the provider's GPU",
@@ -82,10 +76,22 @@ export function TaskDetail() {
 
   return (
     <>
-      <PageHeader title={t.label} intro={<Link to="/app/tasks">← Tasks</Link>} action={<StatusBadge status={t.status} onTime={t.onTime} />} />
-      <div className="detail-grid">
-        <div className="stack">
-          <Card title="Result">
+      <PageHeader
+        title={t.label}
+        back={{ to: "/app/tasks", label: "Tasks" }}
+        intro={`${t.providerName ?? "Provider pending"}${t.model ? ` · ${t.model}` : ""} · ${hbar(total)}`}
+        action={<StatusBadge status={t.status} onTime={t.onTime} />}
+      />
+      <div className="detail-track">
+        <PromiseTrack booked={created} startBy={t.start} deadline={t.deadline} finishedAt={t.finishedAt} status={t.status} onTime={t.onTime} size="lg" />
+      </div>
+      <div className="detail">
+        <div className="detail-main">
+          <section className="block" aria-labelledby="result-h">
+            <div className="block-head">
+              <h2 id="result-h">Result</h2>
+              {t.result && <CopyButton value={t.result} label="result" />}
+            </div>
             {t.result ? (
               <div className="result">{t.result}</div>
             ) : t.status === "failed" ? (
@@ -95,61 +101,74 @@ export function TaskDetail() {
                 <Dots label="Waiting for the result" /> The result appears here when the task finishes. This page updates by itself.
               </p>
             )}
-          </Card>
-          <Card title="Request">
+          </section>
+          <section className="block" aria-labelledby="req-h">
+            <div className="block-head">
+              <h2 id="req-h">What you asked</h2>
+            </div>
             <div className="result quiet">{t.task}</div>
             {t.input && (
-              <details>
-                <summary>Material ({t.input.length.toLocaleString()} characters)</summary>
+              <details className="disclose">
+                <summary>Material, {t.input.length.toLocaleString("en")} characters</summary>
                 <div className="result quiet">{t.input}</div>
               </details>
             )}
-          </Card>
+          </section>
         </div>
-        <div className="stack">
-          <Card title="Progress">
+        <aside className="detail-side">
+          <section aria-labelledby="hist-h">
+            <h2 id="hist-h">History</h2>
             <ol className="timeline">
               {steps.map((s, i) => (
                 <motion.li
                   key={`${i}-${s.state}`}
                   className={s.state}
-                  initial={reduce ? false : { opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3, delay: i * 0.1, ease: [0.2, 0, 0, 1] }}
+                  initial={reduce ? false : { opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.25, delay: i * 0.06, ease: [0.2, 0.7, 0, 1] }}
                 >
                   <span>{s.text}</span>
                   {s.when ? <time>{clock(s.when)}</time> : null}
                 </motion.li>
               ))}
             </ol>
-          </Card>
-          <Card title="Summary">
+          </section>
+          <section aria-labelledby="facts-h">
+            <h2 id="facts-h">Details</h2>
             <dl className="facts">
-              <dt>Due</dt>
-              <dd>{clock(t.deadline)}</dd>
+              <div>
+                <dt>Due</dt>
+                <dd>{clock(t.deadline)}</dd>
+              </div>
               {t.finishedAt ? (
-                <>
+                <div>
                   <dt>Finished</dt>
                   <dd>
-                    {clock(t.finishedAt)} ({t.onTime ? `${t.deadline - t.finishedAt}s early` : `${t.finishedAt - t.deadline}s late`})
+                    {clock(t.finishedAt)}, {t.onTime ? `${t.deadline - t.finishedAt}s early` : `${t.finishedAt - t.deadline}s late`}
                   </dd>
-                </>
+                </div>
               ) : null}
-              <dt>Total cost</dt>
-              <dd>{hbar(total)}</dd>
-              {t.model && (
-                <>
-                  <dt>Model</dt>
-                  <dd>{t.model}</dd>
-                </>
-              )}
+              <div>
+                <dt>GPU time</dt>
+                <dd>{hbar(t.price)}</dd>
+              </div>
+              <div>
+                <dt>Priority paid</dt>
+                <dd>{t.rushPaid ? hbar(t.rushPaid) : "none"}</dd>
+              </div>
+              {t.tokens ? (
+                <div>
+                  <dt>Tokens</dt>
+                  <dd>{t.tokens.toLocaleString("en")}</dd>
+                </div>
+              ) : null}
             </dl>
-          </Card>
-          <details className="card verification">
-            <summary>Verification</summary>
+          </section>
+          <section aria-labelledby="proof-h">
+            <h2 id="proof-h">Proof</h2>
             <ul className="proof">
               <li>
-                The provider signed this job, its start and its result on{" "}
+                The provider signed the booking, start and result on{" "}
                 {p ? (
                   <a href={hashscan("topic", p.topicId)} target="_blank" rel="noopener">
                     Hedera topic {p.topicId}
@@ -157,16 +176,19 @@ export function TaskDetail() {
                 ) : (
                   "its Hedera topic"
                 )}
-                . Job fingerprint <code>{t.jobHash.slice(0, 12)}…</code> <CopyButton value={t.jobHash} label="job fingerprint" />
+                .
+              </li>
+              <li>
+                Job fingerprint <code>{t.jobHash.slice(0, 12)}…</code> <CopyButton value={t.jobHash} label="job fingerprint" />
               </li>
               {t.resultHash && (
                 <li>
-                  Your agent checked the result against the fingerprint the provider signed: <code>{t.resultHash.slice(0, 12)}…</code>
+                  Result checked against the signed fingerprint <code>{t.resultHash.slice(0, 12)}…</code>
                 </li>
               )}
               {t.arkivKey && (
                 <li>
-                  Public record on Arkiv: <code>{t.arkivKey.slice(0, 14)}…</code>
+                  Public record on Arkiv <code>{t.arkivKey.slice(0, 14)}…</code>
                 </li>
               )}
               {p && t.serial !== null && (
@@ -183,8 +205,8 @@ export function TaskDetail() {
                 </li>
               )}
             </ul>
-          </details>
-        </div>
+          </section>
+        </aside>
       </div>
     </>
   );

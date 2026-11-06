@@ -1,5 +1,5 @@
 import { CopyButton } from "../components/motion";
-import { Card, Notice, PageHeader } from "../components/ui";
+import { Notice, PageHeader } from "../components/ui";
 import { hashscan } from "../lib/format";
 import { useMe } from "../lib/hooks";
 import { useSession } from "../lib/session";
@@ -12,49 +12,68 @@ export function Settings() {
     <>
       <PageHeader title="Settings" />
       <Notice text={me.error?.message} kind="error" />
-      <div className="two-col">
-        <Card title="Your account">
+      <div className="split">
+        <section className="block" aria-labelledby="acct-h">
+          <div className="block-head">
+            <h2 id="acct-h">Accounts</h2>
+          </div>
           <dl className="facts">
-            <dt>Wallet</dt>
-            <dd>
-              <a href={hashscan("account", account!)} target="_blank" rel="noopener">
-                {account}
-              </a>{" "}
-              <CopyButton value={account!} label="wallet account" />
-            </dd>
-            <dt>Agent</dt>
-            <dd>
-              {agent ? (
-                <>
-                  <a href={hashscan("account", agent.id)} target="_blank" rel="noopener">
-                    {agent.id}
-                  </a>{" "}
-                  <CopyButton value={agent.id} label="agent account" />
-                </>
-              ) : (
-                "not created yet"
-              )}
-            </dd>
+            <div>
+              <dt>Your wallet</dt>
+              <dd>
+                <a href={hashscan("account", account!)} target="_blank" rel="noopener">
+                  {account}
+                </a>{" "}
+                <CopyButton value={account!} label="wallet account" />
+              </dd>
+            </div>
+            <div>
+              <dt>Your agent</dt>
+              <dd>
+                {agent ? (
+                  <>
+                    <a href={hashscan("account", agent.id)} target="_blank" rel="noopener">
+                      {agent.id}
+                    </a>{" "}
+                    <CopyButton value={agent.id} label="agent account" />
+                  </>
+                ) : (
+                  "not created yet"
+                )}
+              </dd>
+            </div>
             {agent?.arkivKey && (
-              <>
+              <div>
                 <dt>Public record</dt>
                 <dd>
                   <code>{agent.arkivKey.slice(0, 18)}…</code> on Arkiv
                 </dd>
-              </>
+              </div>
             )}
           </dl>
-          <button type="button" className="ghost press" onClick={signOut}>
+          <button type="button" className="btn btn-ghost" onClick={signOut}>
             Sign out
           </button>
-        </Card>
-        <Card title="Security">
-          <ul className="plain">
-            <li>Your wallet's keys never leave HashPack. Signing in only signs a message.</li>
-            <li>Your agent has its own Hedera account. It can spend only the budget you approve, and you can set that to 0 at any time in Billing.</li>
-            <li>Your instructions, material and results are private to you. Only fingerprints of them are public, so anyone can check results weren't altered.</li>
-          </ul>
-        </Card>
+        </section>
+        <section className="block" aria-labelledby="sec-h">
+          <div className="block-head">
+            <h2 id="sec-h">What stays private</h2>
+          </div>
+          <dl className="rules">
+            <div>
+              <dt>Keys</dt>
+              <dd>Your wallet's keys never leave HashPack. Signing in only signs a message.</dd>
+            </div>
+            <div>
+              <dt>Spending</dt>
+              <dd>Your agent has its own Hedera account and spends only the budget you approve. Set it to 0 in Billing at any time.</dd>
+            </div>
+            <div>
+              <dt>Content</dt>
+              <dd>Instructions, material and results are yours alone. Only their fingerprints are public, so anyone can check nothing was altered.</dd>
+            </div>
+          </dl>
+        </section>
       </div>
     </>
   );

@@ -3,13 +3,33 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QueueYield</title>
+    <title>QueueYield: GPU time with a guaranteed start</title>
+    <meta name="description" content="GPU time for AI agents, sold per job. Every job gets a time it must start by, or the provider pays it back. Agents in a hurry buy an earlier place from ones that can wait." />
+    <meta name="theme-color" content="#0b0d10" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="QueueYield: GPU time with a guaranteed start" />
+    <meta property="og:description" content="Every job gets a time it must start by, or the provider pays it back." />
+    <meta name="twitter:card" content="summary" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet" />
+    <style>body{margin:0;background:#0b0d10;color:#e8ecf0;font-family:Archivo,system-ui,sans-serif}</style>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- THESIS: a job is a promise with a deadline; every task is drawn as its promise track, refusing the metric-card dashboard.
+         OWN-WORLD: graphite #0b0d10, light ink, amber only for now/promises/primary, green for kept; Archivo width axis; hairline ledgers, pill controls.
+         STORY: the user sees at a glance what will finish in time, what it cost, and the proof, then books the next task.
+         FIRST VIEWPORT: rail left with amber New task; page title; ledger line; in-progress tasks as live promise tracks.
+         FORM: scheduler lanes / promise track, chosen without a roll at the owner's request (skip the decision round).
+         FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
+    <!-- Replaced by the app on load; what crawlers and no-JS visitors read. -->
+    <div id="root">
+      <main style="max-width:1100px;margin:0 auto;padding:12vh 24px">
+        <h1 style="font-size:clamp(2.4rem,6vw,5.6rem);line-height:.95;letter-spacing:-.035em;font-stretch:125%;margin:0 0 24px">Every job gets a time it must start by.</h1>
+        <p style="max-width:46ch;color:#9aa4af;font-size:1.0625rem;line-height:1.55">GPU time for AI agents, sold per job instead of per hour. The provider promises the latest moment your job starts, or pays you back. In a hurry? Your agent buys an earlier place from one that can wait.</p>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

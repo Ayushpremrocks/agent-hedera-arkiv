@@ -1,21 +1,25 @@
 import "./lib/polyfill";
 import "./style.css";
 import "./polish.css";
+import "./landing.css";
+import "./app.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type ReactNode, StrictMode } from "react";
+import { type ReactNode, StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AppShell } from "./components/AppShell";
+// App pages load on demand, so the landing page doesn't download the wallet and chain SDKs.
+const page = <K extends string>(name: K, load: () => Promise<Record<K, () => ReactNode>>) => lazy(async () => ({ default: (await load())[name] }));
+const Billing = page("Billing", () => import("./pages/Billing"));
+const Market = page("Market", () => import("./pages/Market"));
+const NewTask = page("NewTask", () => import("./pages/NewTask"));
+const Overview = page("Overview", () => import("./pages/Overview"));
+const Settings = page("Settings", () => import("./pages/Settings"));
+const TaskDetail = page("TaskDetail", () => import("./pages/TaskDetail"));
+const Tasks = page("Tasks", () => import("./pages/Tasks"));
 import { Toaster } from "./components/motion";
 import { SessionProvider, useSession } from "./lib/session";
-import { Billing } from "./pages/Billing";
-import { Landing } from "./pages/Landing";
-import { Market } from "./pages/Market";
-import { NewTask } from "./pages/NewTask";
-import { Overview } from "./pages/Overview";
-import { Settings } from "./pages/Settings";
-import { TaskDetail } from "./pages/TaskDetail";
-import { Tasks } from "./pages/Tasks";
+import { Landing, NotFound } from "./pages/Landing";
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
@@ -29,6 +33,7 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <SessionProvider>
         <BrowserRouter>
+          <Suspense fallback={null}>
           <Routes>
             <Route index element={<Landing />} />
             <Route element={<AppShell />}>
@@ -47,8 +52,9 @@ createRoot(document.getElementById("root")!).render(
               <Route path="app/billing" element={<RequireAccount children={<Billing />} />} />
               <Route path="app/settings" element={<RequireAccount children={<Settings />} />} />
             </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
         </BrowserRouter>
         <Toaster />
       </SessionProvider>
