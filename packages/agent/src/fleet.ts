@@ -77,6 +77,7 @@ for (const topicId of new Set(reachable.map((p) => p.topic_id.value))) {
     seq = batch.at(-1)!.seq;
   }
 }
+
 const delivered = log.filter((x) => x.e.type === "delivered");
 const trades = log.filter((x) => x.e.type === "trade");
 const sum = (k: string) => stats.reduce((a, s) => a + Number(s[k]), 0);
