@@ -11,6 +11,7 @@
     "spike:nft": "tsx spikes/c-nft-swap.ts",
     "provider": "pnpm -C packages/provider start",
     "agent": "pnpm -C packages/agent start",
+    "fleet": "pnpm -C packages/agent fleet",
     "web": "pnpm -C packages/web dev"
   },
   "devDependencies": {

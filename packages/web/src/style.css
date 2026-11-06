@@ -56,6 +56,12 @@ section { margin-top: 40px; min-width: 0; }
 .section-head p { margin: 4px 0 14px; color: var(--ink-2); font-size: 0.9375rem; }
 .pair { display: grid; grid-template-columns: 3fr 2fr; gap: 0 48px; }
 
+/* ---------- headline numbers ---------- */
+.stats { display: flex; flex-wrap: wrap; gap: 8px 48px; padding: 4px 0 20px; }
+.stats div { display: grid; }
+.stats b { font-size: 1.95rem; font-weight: 800; font-stretch: 112%; line-height: 1.1; }
+.stats span { color: var(--ink-2); font-size: 0.875rem; }
+
 /* ---------- schedule: the one loud element ---------- */
 .timeline { margin-top: 8px; }
 .chart-wrap {

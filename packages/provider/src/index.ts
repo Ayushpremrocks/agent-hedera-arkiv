@@ -9,6 +9,7 @@ import { eq } from "@arkiv-network/sdk/query";
 import { u64 } from "@arkiv-network/sdk/schema";
 import {
   HBAR,
+  MIRROR,
   type HcsEvent,
   HttpError,
   NETWORK,
@@ -21,27 +22,34 @@ import {
   hashscan,
   hederaClient,
   jobHash,
+  nftOwner,
   need,
-  ownedSerials,
   parseJob,
   postEvent,
   role,
   serve,
+  sha256,
   slotInfo,
   tokenNfts,
   verifyRequest,
 } from "@qy/shared";
 import { ensureInfra, issueSlot } from "./chain.js";
-import { runJob } from "./runner.js";
-import { pending, savePending } from "./store.js";
+import { LLM_BASE_URL, LLM_MODEL, runJob, warmUp } from "./runner.js";
+import { bookingPrice } from "./pricing.js";
+import { clearQueue, dequeue, enqueue, loadResult, nextJob, queues, saveResult } from "./store.js";
 
 const PORT = Number(process.env.PROVIDER_PORT ?? 4000);
 const BOOKING_URL = process.env.PROVIDER_URL ?? `http://localhost:${PORT}`;
 const SLOT_SECONDS = Number(process.env.SLOT_SECONDS ?? 30);
 const WORKERS = Number(process.env.WORKERS ?? 2); // slots per start time = jobs run in parallel
 const LEAD_SECONDS = Number(process.env.LEAD_SECONDS ?? 120); // earliest bookable start, leaves time to trade
-const PRICE_FLOOR = BigInt(process.env.PRICE_FLOOR ?? 10_000_000); // tinybars (0.1 HBAR), covers mint + transfer fees
+// The floor must cover what one booking costs the provider on Hedera. Measured on testnet: mint
+// ~0.21 HBAR + transfer ~0.008 + three HCS messages ~0.016, about 1.6 US cents. Fees are set in USD,
+// so the floor is too, converted with the network's own exchange rate (PRICE_FLOOR in tinybars overrides).
+const PRICE_FLOOR_CENTS = Number(process.env.PRICE_FLOOR_CENTS ?? 2.5);
 const PRICE_WINDOW = Number(process.env.PRICE_WINDOW_SECONDS ?? 300); // how far ahead "near-term" capacity counts
+const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 600); // drop queued jobs this far past their deadline
+const MAX_QUEUE = 20; // queued jobs per account; bookings are paid, this just bounds memory
 const KILL_MARGIN_MS = 1500; // a job is killed this long before its slot ends, so the next slot starts on a free worker
 
 const P = role("PROVIDER");
@@ -55,6 +63,18 @@ function log(event: HcsEvent) {
   console.log(event);
   postEvent(client, topicId, P.id, P.key, event).catch((e) => console.error("HCS post failed:", e.message));
 }
+
+async function floorTinybars(): Promise<bigint> {
+  if (process.env.PRICE_FLOOR) return BigInt(process.env.PRICE_FLOOR);
+  const r = ((await (await fetch(`${MIRROR}/network/exchangerate`)).json()) as any).current_rate; // cent_equivalent cents = hbar_equivalent HBAR
+  return BigInt(Math.ceil(((PRICE_FLOOR_CENTS * r.hbar_equivalent) / r.cent_equivalent) * 1e8));
+}
+let PRICE_FLOOR = await floorTinybars();
+setInterval(() => floorTinybars().then((f) => (PRICE_FLOOR = f)).catch(() => {}), 3600_000).unref();
+console.log(`booking floor ${PRICE_FLOOR} tinybars (${PRICE_FLOOR_CENTS} US cents)`);
+
+console.log(`model ${LLM_MODEL} at ${LLM_BASE_URL}: loading...`);
+console.log(`model ready in ${await warmUp()}ms`);
 
 const facilitator = new HTTPFacilitatorClient({ url: need("X402_FACILITATOR_URL") });
 const x402 = new x402ResourceServer(facilitator).register(NETWORK, new ExactHederaScheme());
@@ -73,14 +93,14 @@ function place(start: number, serial: number | null) {
 }
 
 /**
- * Booking price: the floor, doubled for every start time already full in the near-term window.
- * Idle capacity stays cheap; hoarding it gets exponentially expensive, whoever's accounts do it.
+ * Current booking price, from how full every slot between now and PRICE_WINDOW past the earliest
+ * bookable start is. Slots already booked inside the lead time count too: they're live demand.
  */
 function price(): bigint {
-  const horizon = now() + LEAD_SECONDS + PRICE_WINDOW;
-  let full = 0;
-  for (const [start, list] of slots) if (start <= horizon && list.length >= WORKERS) full++;
-  return PRICE_FLOOR << BigInt(full);
+  const end = Math.ceil((now() + LEAD_SECONDS) / SLOT_SECONDS) * SLOT_SECONDS + PRICE_WINDOW;
+  let booked = 0;
+  for (const [start, list] of slots) if (start > now() && start < end) booked += list.length;
+  return bookingPrice(booked, Math.ceil((end - now()) / SLOT_SECONDS) * WORKERS, PRICE_FLOOR);
 }
 
 /** Reserve the earliest start with a free worker. Synchronous, so concurrent bookings can't collide. */
@@ -108,21 +128,37 @@ async function runSlot(serial: number, start: number) {
   try {
     owner = (await slotInfo(client, tokenId, serial)).owner; // consensus, so a swap just before start counts
   } catch (e) {
-    return console.error(`slot #${serial}: owner lookup failed`, e);
+    // Consensus didn't answer in time: the Mirror Node is a few seconds behind but far better than idling.
+    console.error(`slot #${serial}: ${(e as Error).message}; using the Mirror Node`);
+    try {
+      owner = await nftOwner(tokenId, serial);
+    } catch (e2) {
+      return console.error(`slot #${serial}: owner lookup failed`, e2);
+    }
   }
-  const p = pending.get(owner);
+  // A job long past its deadline has lost its slot somewhere (provider downtime, a crashed owner).
+  // Running it first would push the owner's live work out of this slot, so drop it and say so.
+  for (const q of queues.get(owner) ?? []) {
+    if (q.job.deadline < now() - STALE_SECONDS) {
+      dequeue(owner, q.hash);
+      log({ type: "expired", owner, jobHash: q.hash, deadline: q.job.deadline });
+    }
+  }
+  const p = nextJob(owner);
   log({ type: "dispatch", serial, start, owner, jobHash: p?.hash ?? null });
-  if (!p) return; // owner never bound a job: the slot idles
-  pending.delete(owner);
-  savePending();
+  if (!p) return; // owner has nothing queued: the slot idles
+  dequeue(owner, p.hash);
 
   const t0 = Date.now();
   try {
     const limit = (start + SLOT_SECONDS) * 1000 - KILL_MARGIN_MS - Date.now();
-    const r = await runJob(p.job, `${serial}:${p.hash}`, Math.max(0, limit));
-    log({ type: "done", serial, owner, jobHash: p.hash, ok: true, result: `${r.digest}/${r.iterations}`, ms: Date.now() - t0 });
+    if (limit <= 0) throw new Error("missed: the provider dispatched after the slot ended");
+    const r = await runJob(p.job, limit);
+    const ms = Date.now() - t0;
+    saveResult(p.hash, { owner, text: r.text, tokens: r.tokens, model: LLM_MODEL, ms });
+    log({ type: "done", serial, owner, jobHash: p.hash, ok: true, result: "ok", resultHash: sha256(r.text), tokens: r.tokens, ms });
   } catch (e) {
-    log({ type: "done", serial, owner, jobHash: p.hash, ok: false, result: (e as Error).message, ms: Date.now() - t0 });
+    log({ type: "done", serial, owner, jobHash: p.hash, ok: false, result: (e as Error).message, resultHash: null, tokens: 0, ms: Date.now() - t0 });
   }
 }
 
@@ -131,7 +167,7 @@ for (const nft of await tokenNfts(tokenId)) {
   const { s } = decodeSlot(nft.metadata);
   if (!nft.deleted && s > now() - SLOT_SECONDS) place(s, nft.serial_number);
 }
-console.log(`restored ${[...slots.values()].flat().length} upcoming slots, ${pending.size} pending jobs`);
+console.log(`restored ${[...slots.values()].flat().length} upcoming slots, ${[...queues.values()].flat().length} queued jobs`);
 
 // ---- HTTP ----
 const requirements = (amount: bigint) =>
@@ -174,7 +210,9 @@ await serve(PORT, {
    */
   "POST /book": async ({ body, headers }): Promise<Res> => {
     const { job, hash, account } = await authed("book", body);
-    if (pending.has(account)) throw new HttpError(409, "account already has a pending job; use /bind to replace it");
+    const queued = queues.get(account) ?? [];
+    if (queued.some((q) => q.hash === hash)) throw new HttpError(409, "this job is already booked");
+    if (queued.length >= MAX_QUEUE) throw new HttpError(429, `at most ${MAX_QUEUE} queued jobs per account`);
 
     const quote = price();
     const header = headers["payment-signature"];
@@ -187,11 +225,11 @@ await serve(PORT, {
     if (!payload || BigInt(payload.accepted?.amount ?? 0) < quote) {
       // Price may have risen since the client's quote: no settle happened, so just quote again.
       const required = await x402.createPaymentRequiredResponse(await requirements(quote), { url: `${BOOKING_URL}/book` });
-      return { status: 402, body: { error: "payment required", price: quote.toString() }, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } };
+      return { status: 402, body: { error: "payment required", price: quote.toString(), floor: PRICE_FLOOR.toString() }, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } };
     }
 
-    // Claim synchronously so a parallel /book from the same account gets 409 and can't double-pay.
-    pending.set(account, { job, hash });
+    // Queue synchronously so a parallel /book of the same job gets 409 and can't double-pay.
+    enqueue(account, { job, hash });
     const start = reserve();
     let settled;
     try {
@@ -205,7 +243,7 @@ await serve(PORT, {
       if (!settled.success) throw new HttpError(402, `payment failed: ${settled.errorReason}`);
     } catch (e) {
       settle(start, null);
-      pending.delete(account);
+      dequeue(account, hash);
       throw e;
     }
 
@@ -214,28 +252,42 @@ await serve(PORT, {
       issued = await issueSlot(client, tokenId, T, account, { s: start, h: hash });
     } catch (e) {
       settle(start, null);
-      pending.delete(account);
+      dequeue(account, hash);
       await refund(account, BigInt(payload.accepted.amount), settled.transaction, (e as Error).message);
       throw e;
     }
     settle(start, issued.serial);
-    savePending();
-    log({ type: "booked", serial: issued.serial, start, owner: account, jobHash: hash });
+    log({ type: "booked", serial: issued.serial, start, owner: account, jobHash: hash, price: payload.accepted.amount });
     return {
       body: { serial: issued.serial, start, tokenId, topicId, price: payload.accepted.amount, paymentTx: settled.transaction, transferTx: issued.transferTx },
       headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(settled) },
     };
   },
 
-  /** Replace the caller's pending job. Only accounts currently holding a slot may bind. */
-  "POST /bind": async ({ body }) => {
-    const { job, hash, account } = await authed("bind", body);
-    const held = await ownedSerials(account, tokenId);
-    if (!held.length) throw new HttpError(403, "account holds no slot");
-    pending.set(account, { job, hash });
-    savePending();
-    log({ type: "bound", account, jobHash: hash });
-    return { body: { jobHash: hash, slots: held } };
+  /** Drop all of the caller's queued jobs, e.g. when an agent starts over. Its slots stay its own. */
+  "POST /jobs/clear": async ({ body }) => {
+    let account;
+    try {
+      account = await verifyRequest("clear", "all", body);
+    } catch (e) {
+      throw new HttpError(401, (e as Error).message);
+    }
+    return { body: { cleared: clearQueue(account) } };
+  },
+
+  /** The job's result, only for the account that booked it. Its sha256 is in the job's `done` event. */
+  "POST /results": async ({ body }) => {
+    const hash = String(body?.jobHash ?? "");
+    let account;
+    try {
+      account = await verifyRequest("result", hash, body);
+    } catch (e) {
+      throw new HttpError(401, (e as Error).message);
+    }
+    const r = loadResult(hash);
+    if (!r) throw new HttpError(404, "no result for this job (yet)");
+    if (r.owner !== account) throw new HttpError(403, "only the job's owner can read its result");
+    return { body: { jobHash: hash, text: r.text, tokens: r.tokens, model: r.model, ms: r.ms } };
   },
 });
 console.log(`listening on ${BOOKING_URL}`);

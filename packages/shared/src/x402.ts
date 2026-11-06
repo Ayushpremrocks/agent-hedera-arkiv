@@ -16,13 +16,23 @@ export function hbarPayer(id: string, key: string, maxTinybars: bigint) {
     .setSpendControls({ allowedAssets: [{ network: NETWORK, asset: HBAR, maxAmountPerPayment: maxTinybars.toString() }] });
 }
 
-/** POST JSON. On 402, pay once through x402 and retry with the PAYMENT-SIGNATURE header. */
-export async function postPaid(url: string, body: unknown, payer?: x402Client) {
+/**
+ * POST JSON. On 402, pay through x402 and retry with the PAYMENT-SIGNATURE header. If the price rose
+ * in between, the server re-quotes without settling anything, so pay the new quote (a few times at
+ * most; the payer's spend cap still bounds every payment).
+ */
+export async function postPaid(url: string, body: unknown, payer?: x402Client, attempts = 3, timeoutMs = 60_000) {
   const post = (headers: Record<string, string> = {}) =>
-    fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+    fetch(url, {
+      method: "POST",
+      signal: AbortSignal.timeout(timeoutMs), // a peer that never answers can't stall the caller
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
   let res = await post();
-  const required = res.headers.get("payment-required");
-  if (res.status === 402 && payer && required) {
+  for (let i = 0; i < attempts && res.status === 402 && payer; i++) {
+    const required = res.headers.get("payment-required");
+    if (!required) break;
     const payload = await payer.createPaymentPayload(decodePaymentRequiredHeader(required));
     res = await post({ "payment-signature": encodePaymentSignatureHeader(payload) });
   }

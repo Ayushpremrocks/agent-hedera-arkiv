@@ -31,14 +31,17 @@ function inHuman(secs: number) {
   return secs >= 0 ? `in ${t}` : `${t} ago`;
 }
 
-const AGENT_COLORS: Record<string, string> = { A: "#C8326B", B: "#23786A", C: "#6550C8" };
-const OTHER_COLORS = ["#B5651D", "#3B6FB6", "#7A8B2E"];
+// Fixed colors for the first agents, then evenly spaced hues for any more; all dark enough for white text.
+const AGENT_COLORS = ["#C8326B", "#23786A", "#6550C8", "#B5651D", "#3B6FB6", "#7A8B2E", "#A23C9A", "#2F7F96"];
 function color(id: string) {
   const n = names[id];
-  if (n) return AGENT_COLORS[n];
+  if (n) {
+    const i = n.charCodeAt(0) - 65;
+    return AGENT_COLORS[i] ?? `hsl(${(i * 47) % 360} 55% 38%)`;
+  }
   let h = 0;
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return OTHER_COLORS[h % OTHER_COLORS.length];
+  return `hsl(${h % 360} 30% 40%)`;
 }
 const nameOf = (id: string) => (names[id] ? `Agent ${names[id]}` : id === providerId ? "Provider" : id);
 const who = (id: string) =>
@@ -296,11 +299,12 @@ function describe(ev: Ev) {
   const e = ev.e;
   const n = (id: unknown) => (isAccount(id) ? esc(nameOf(id)) : "?");
   switch (e.type) {
-    case "booked": return `${n(e.owner)} booked slot #${e.serial} for ${clock(e.start)}`;
-    case "bound": return `${n(e.account)} bound a new job`;
+    case "booked": return `${n(e.owner)} booked slot #${e.serial} for ${clock(e.start)}${e.price ? `, paid ${esc(hbar(e.price))}` : ""}`;
+    case "delivered": return `${n(ev.by)} received "${esc(e.label)}" ${e.met ? "on time" : `${Math.max(0, e.finishedAt - e.deadline)}s late`}`;
     case "dispatch": return e.jobHash ? `Slot #${e.serial} started ${n(e.owner)}'s job` : `Slot #${e.serial} started with no job bound`;
-    case "done": return e.ok ? `Slot #${e.serial} finished ${n(e.owner)}'s job in ${(e.ms / 1000).toFixed(1)}s` : `Slot #${e.serial}: ${n(e.owner)}'s job ${String(e.result).startsWith("timeout") ? "was killed at slot end" : "failed"}`;
+    case "done": return e.ok ? `Slot #${e.serial} finished ${n(e.owner)}'s job in ${(e.ms / 1000).toFixed(1)}s${e.tokens ? `, ${e.tokens} tokens` : ""}` : `Slot #${e.serial}: ${n(e.owner)}'s job ${String(e.result).startsWith("timeout") ? "was killed at slot end" : "failed"}`;
     case "trade": return `${n(e.seller)} sold slot #${e.sellerSerial} to ${n(e.buyer)} for ${esc(hbar(e.price))} and took #${e.buyerSerial}`;
+    case "expired": return `${n(e.owner)}'s job expired unrun, long past its deadline`;
     case "refund": return `Provider refunded ${esc(hbar(e.amount))} to ${n(e.buyer)}`;
     default: return `Unknown message type`;
   }
@@ -364,6 +368,21 @@ async function runQuery(ev: Event) {
   renderOffers();
 }
 
+/** Headline numbers from the signed log: are agents getting their work on time, and is the market moving? */
+function renderStats() {
+  const delivered = events.filter((x) => x.verified && x.e.type === "delivered" && x.by !== providerId);
+  const onTime = delivered.filter((x) => x.e.met).length;
+  const trades = events.filter((x) => x.verified && x.e.type === "trade" && x.by === x.e.seller);
+  const volume = trades.reduce((a, t) => a + Number(t.e.price), 0);
+  const lastBooking = events.find((x) => x.verified && x.by === providerId && x.e.type === "booked" && x.e.price);
+  const items: [string, string][] = [
+    [delivered.length ? `${Math.round((onTime / delivered.length) * 100)}%` : "–", `of ${delivered.length} delivered jobs on time`],
+    [String(trades.length), `slot trades, ${hbar(volume)} total`],
+    [lastBooking ? hbar(lastBooking.e.price) : "–", "latest booking price"],
+  ];
+  $("stats").innerHTML = items.map(([v, l]) => `<div><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
+}
+
 function renderStatus() {
   $("status").textContent = error
     ? `${error} Retrying every ${REFRESH_MS / 1000} seconds.`
@@ -374,6 +393,7 @@ function renderStatus() {
 }
 
 function renderData() {
+  renderStats();
   renderChart();
   renderOffers();
   renderTrades();

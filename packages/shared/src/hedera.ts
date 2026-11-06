@@ -45,9 +45,20 @@ export type SlotMeta = { s: number; h: string };
 export const encodeSlot = (m: SlotMeta) => Buffer.from(JSON.stringify(m));
 export const decodeSlot = (b64: string): SlotMeta => JSON.parse(Buffer.from(b64, "base64").toString());
 
-/** Owner and metadata of a slot straight from consensus (no Mirror lag). Costs a tiny query fee. */
-export async function slotInfo(client: Client, tokenId: string, serial: number) {
-  const [nft] = await new TokenNftInfoQuery().setNftId(new NftId(TokenId.fromString(tokenId), serial)).execute(client);
+/**
+ * Owner and metadata of a slot straight from consensus (no Mirror lag). Costs a tiny query fee.
+ * Bounded: the SDK's default retries can stall for minutes when a node misbehaves (seen on testnet),
+ * and callers run on a schedule, so give up after `timeoutMs` and let them fall back.
+ */
+export async function slotInfo(client: Client, tokenId: string, serial: number, timeoutMs = 8000) {
+  const query = new TokenNftInfoQuery().setNftId(new NftId(TokenId.fromString(tokenId), serial)).setMaxAttempts(3).setGrpcDeadline(3000);
+  let timer: NodeJS.Timeout | undefined;
+  const [nft] = await Promise.race([
+    query.execute(client, timeoutMs),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`consensus lookup of #${serial} timed out`)), timeoutMs + 1000);
+    }),
+  ]).finally(() => clearTimeout(timer));
   return { owner: nft.accountId.toString(), meta: JSON.parse(Buffer.from(nft.metadata ?? []).toString()) as SlotMeta };
 }
 

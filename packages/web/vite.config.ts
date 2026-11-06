@@ -5,7 +5,10 @@ import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, "../..", "");
   const names: Record<string, string> = {};
-  for (const n of ["A", "B", "C"]) if (env[`AGENT_${n}_ID`]) names[env[`AGENT_${n}_ID`]] = n;
+  for (const [k, v] of Object.entries(env)) {
+    const m = k.match(/^AGENT_([A-Z0-9]+)_ID$/);
+    if (m && v) names[v] = m[1];
+  }
   return {
     envDir: "../..",
     define: {
