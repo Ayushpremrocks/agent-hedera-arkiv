@@ -1,3 +1,4 @@
+import { CopyButton } from "../components/motion";
 import { Card, Notice, PageHeader } from "../components/ui";
 import { hashscan } from "../lib/format";
 import { useMe } from "../lib/hooks";
@@ -18,14 +19,18 @@ export function Settings() {
             <dd>
               <a href={hashscan("account", account!)} target="_blank" rel="noopener">
                 {account}
-              </a>
+              </a>{" "}
+              <CopyButton value={account!} label="wallet account" />
             </dd>
             <dt>Agent</dt>
             <dd>
               {agent ? (
-                <a href={hashscan("account", agent.id)} target="_blank" rel="noopener">
-                  {agent.id}
-                </a>
+                <>
+                  <a href={hashscan("account", agent.id)} target="_blank" rel="noopener">
+                    {agent.id}
+                  </a>{" "}
+                  <CopyButton value={agent.id} label="agent account" />
+                </>
               ) : (
                 "not created yet"
               )}
@@ -39,7 +44,7 @@ export function Settings() {
               </>
             )}
           </dl>
-          <button type="button" className="ghost" onClick={signOut}>
+          <button type="button" className="ghost press" onClick={signOut}>
             Sign out
           </button>
         </Card>

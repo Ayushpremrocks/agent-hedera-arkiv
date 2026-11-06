@@ -1,10 +1,12 @@
 import "./lib/polyfill";
 import "./style.css";
+import "./polish.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AppShell } from "./components/AppShell";
+import { Toaster } from "./components/motion";
 import { SessionProvider, useSession } from "./lib/session";
 import { Billing } from "./pages/Billing";
 import { Landing } from "./pages/Landing";
@@ -48,6 +50,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        <Toaster />
       </SessionProvider>
     </QueryClientProvider>
   </StrictMode>,

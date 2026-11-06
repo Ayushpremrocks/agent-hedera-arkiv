@@ -253,7 +253,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       save();
     });
     say(`${met ? "ON TIME" : "LATE"} "${job.label}" (${p.name} #${done.e.serial})`);
-    await postEvent(client, p.topicId, me.id, me.key, { type: "delivered", jobHash: hash, serial: done.e.serial, label: job.label, deadline: job.deadline, finishedAt: done.ts, met }).catch(
+    await postEvent(client, p.topicId, me.id, me.key, { type: "delivered", jobHash: hash, serial: done.e.serial, label: job.fromUser ? "" : job.label, deadline: job.deadline, finishedAt: done.ts, met }).catch(
       (e) => say(`HCS delivered: ${e.message}`),
     );
   }

@@ -416,7 +416,7 @@ function describe(ev: LogEvent, names: Record<string, string>) {
     case "refund":
       return `Provider refunded ${hbar(e.amount)} to ${n(e.buyer)}`;
     case "delivered":
-      return `${n(ev.by)} received "${e.label}" ${e.met ? "on time" : `${Math.max(0, e.finishedAt - e.deadline)}s late`}`;
+      return `${n(ev.by)} received ${e.label ? `"${e.label}"` : "a task"} ${e.met ? "on time" : `${Math.max(0, e.finishedAt - e.deadline)}s late`}`;
     case "expired":
       return `${n(e.owner)}'s job expired unrun`;
     default:

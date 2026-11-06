@@ -1,5 +1,8 @@
+import { CheckCircle, Clock, Tray, WarningCircle } from "@phosphor-icons/react";
+import { motion, useReducedMotion } from "motion/react";
 import type { ReactNode } from "react";
 import { statusOf } from "../lib/hooks";
+import { Dots } from "./motion";
 
 export function Notice({ text, kind = "info" }: { text?: string | null; kind?: "info" | "error" }) {
   if (!text) return null;
@@ -46,14 +49,28 @@ export function Metric({ value, label, hint }: { value: ReactNode; label: string
   );
 }
 
+/** Status with a cue that doesn't depend on colour alone: dots while running, an icon otherwise. */
 export function StatusBadge({ status, onTime }: { status: string; onTime: boolean | null }) {
   const s = statusOf({ status: status as any, onTime });
-  return <span className={`badge ${s.tone}`}>{s.label}</span>;
+  const reduce = useReducedMotion();
+  const icon =
+    s.tone === "run" ? <Dots label="Running" /> : s.tone === "ok" ? (
+      <motion.span style={{ display: "inline-flex" }} initial={reduce ? false : { scale: 0.25, opacity: 0, filter: "blur(4px)" }} animate={{ scale: 1, opacity: 1, filter: "blur(0px)" }} transition={{ type: "spring", duration: 0.3, bounce: 0 }}>
+        <CheckCircle weight="fill" />
+      </motion.span>
+    ) : s.tone === "bad" || s.tone === "late" ? <WarningCircle weight="fill" /> : <Clock weight="bold" />;
+  return (
+    <span className={`badge ${s.tone}`}>
+      {icon}
+      {s.label}
+    </span>
+  );
 }
 
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="empty-state">
+      <Tray size={28} weight="duotone" aria-hidden />
       <b>{title}</b>
       {children}
     </div>

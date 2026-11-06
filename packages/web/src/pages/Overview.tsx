@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
+import { Plus } from "@phosphor-icons/react";
 import { BudgetForm } from "../components/BudgetForm";
+import { AnimatedNumber, Item, Skeleton, Stagger, toast } from "../components/motion";
 import { Card, Empty, Metric, Notice, PageHeader, StatusBadge } from "../components/ui";
 import { clock, hbar } from "../lib/format";
 import { useMe, useTasks } from "../lib/hooks";
@@ -11,9 +13,27 @@ export function Overview() {
   const qc = useQueryClient();
   const me = useMe();
   const tasks = useTasks();
-  const create = useMutation({ mutationFn: () => api("/agent", {}), onSuccess: () => qc.invalidateQueries({ queryKey: ["me"] }) });
+  const create = useMutation({
+    mutationFn: () => api("/agent", {}),
+    onSuccess: () => {
+      toast("success", "Your agent is ready", "Give it a budget next.");
+      qc.invalidateQueries({ queryKey: ["me"] });
+    },
+    onError: (e) => toast("error", "Couldn't create your agent", e.message),
+  });
 
-  if (me.isPending) return <p className="muted">Loading…</p>;
+  if (me.isPending)
+    return (
+      <div className="metrics" aria-busy>
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div className="metric" key={i}>
+            <Skeleton h={12} w="55%" />
+            <Skeleton h={26} w="80%" />
+            <Skeleton h={10} w="65%" />
+          </div>
+        ))}
+      </div>
+    );
   if (me.isError) return <Notice text={me.error.message} kind="error" />;
   const agent = me.data.agent;
 
@@ -29,7 +49,7 @@ export function Overview() {
               <p>It gets its own Hedera account and works for you around the clock.</p>
             </div>
             {!agent && (
-              <button type="button" onClick={() => create.mutate()} disabled={create.isPending}>
+              <button type="button" className="press" onClick={() => create.mutate()} disabled={create.isPending}>
                 {create.isPending ? "Creating… (about 15 seconds)" : "Create agent"}
               </button>
             )}
@@ -56,23 +76,31 @@ export function Overview() {
   const finished = s.met + s.late + s.failed;
   const list = tasks.data ?? [];
   const active = list.filter((t) => t.status === "queued" || t.status === "running").length;
+  const hb = (n: number) => `${n.toFixed(4).replace(/\.?0+$/, "")} HBAR`;
   return (
-    <>
-      <PageHeader
-        title="Overview"
-        action={
-          <Link className="button" to="/app/tasks/new">
-            New task
-          </Link>
-        }
-      />
-      <div className="metrics">
-        <Metric label="Budget left" value={hbar(agent.allowance)} hint="What your agent may still spend" />
-        <Metric label="Delivered on time" value={finished ? `${Math.round((s.met / finished) * 100)}%` : "–"} hint={finished ? `${s.met} of ${finished} tasks` : "No tasks finished yet"} />
-        <Metric label="In progress" value={String(active)} hint="Scheduled or running" />
-        <Metric label="Spent" value={hbar(s.spent)} hint="GPU time and priority" />
-        <Metric label="Earned" value={hbar(s.earned)} hint="By letting others go first" />
-      </div>
+    <Stagger>
+      <Item>
+        <PageHeader
+          title="Overview"
+          action={
+            <Link className="button press" to="/app/tasks/new">
+              <Plus weight="bold" aria-hidden /> New task
+            </Link>
+          }
+        />
+      </Item>
+      <Item className="metrics">
+        <Metric label="Budget left" value={agent.allowance === null ? "–" : <AnimatedNumber value={Number(agent.allowance) / 1e8} format={hb} />} hint="What your agent may still spend" />
+        <Metric
+          label="Delivered on time"
+          value={finished ? <AnimatedNumber value={Math.round((s.met / finished) * 100)} format={(n) => `${Math.round(n)}%`} /> : "–"}
+          hint={finished ? `${s.met} of ${finished} tasks` : "No tasks finished yet"}
+        />
+        <Metric label="In progress" value={<AnimatedNumber value={active} format={(n) => String(Math.round(n))} />} hint="Scheduled or running" />
+        <Metric label="Spent" value={<AnimatedNumber value={Number(s.spent) / 1e8} format={hb} />} hint="GPU time and priority" />
+        <Metric label="Earned" value={<AnimatedNumber value={Number(s.earned) / 1e8} format={hb} />} hint="By letting others go first" />
+      </Item>
+      <Item>
       <Card
         title="Recent tasks"
         action={
@@ -114,6 +142,7 @@ export function Overview() {
           </Empty>
         )}
       </Card>
-    </>
+      </Item>
+    </Stagger>
   );
 }

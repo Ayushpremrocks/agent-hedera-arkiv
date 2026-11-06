@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { Lightning, Leaf, Timer } from "@phosphor-icons/react";
+import { ProgressButton, Skeleton, toast } from "../components/motion";
 import { Card, Notice, PageHeader } from "../components/ui";
 import { hbar, inHuman, toTinybars } from "../lib/format";
 import { useMe, useQuote } from "../lib/hooks";
@@ -9,9 +11,9 @@ import { useSession } from "../lib/session";
 // What each priority means to the agent, in HBAR: the most it pays to jump ahead, and the least it
 // accepts to let someone else go first.
 const PRIORITY = {
-  flexible: { title: "Flexible", blurb: "Not urgent. Your agent may let others go first, and earns HBAR when it does.", maxPay: "0", minComp: "0.02" },
-  standard: { title: "Standard", blurb: "Runs in the next free slot. Pays a little to stay on time if needed.", maxPay: "0.05", minComp: "0.05" },
-  rush: { title: "Rush", blurb: "Your agent pays to jump ahead of others so it finishes in time.", maxPay: "0.3", minComp: "0.5" },
+  flexible: { icon: Leaf, title: "Flexible", blurb: "Not urgent. Your agent may let others go first, and earns HBAR when it does.", maxPay: "0", minComp: "0.02" },
+  standard: { icon: Timer, title: "Standard", blurb: "Runs in the next free slot. Pays a little to stay on time if needed.", maxPay: "0.05", minComp: "0.05" },
+  rush: { icon: Lightning, title: "Rush", blurb: "Your agent pays to jump ahead of others so it finishes in time.", maxPay: "0.3", minComp: "0.5" },
 } as const;
 type Priority = keyof typeof PRIORITY;
 
@@ -45,9 +47,11 @@ export function NewTask() {
         minComp: toTinybars(f.minComp),
       }),
     onSuccess: (r) => {
+      toast("success", "Task booked", `"${f.label}" is scheduled. Follow it here.`);
       qc.invalidateQueries({ queryKey: ["tasks"] });
       navigate(`/app/tasks/${r.jobHash}`);
     },
+    onError: (e) => toast("error", "Couldn't book the task", e.message),
   });
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -98,13 +102,18 @@ export function NewTask() {
             </label>
             <fieldset className="priority">
               <legend>Priority</legend>
-              {(Object.keys(PRIORITY) as Priority[]).map((p) => (
-                <label key={p} className={f.priority === p ? "on" : ""}>
+              {(Object.keys(PRIORITY) as Priority[]).map((p) => {
+                const Icon = PRIORITY[p].icon;
+                return (
+                <label key={p} className={`press-soft ${f.priority === p ? "on" : ""}`}>
                   <input type="radio" name="priority" checked={f.priority === p} onChange={() => pick(p)} />
-                  <b>{PRIORITY[p].title}</b>
+                  <b>
+                    <Icon weight={f.priority === p ? "fill" : "regular"} aria-hidden /> {PRIORITY[p].title}
+                  </b>
                   <span>{PRIORITY[p].blurb}</span>
                 </label>
-              ))}
+                );
+              })}
             </fieldset>
             <button type="button" className="link-button" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}>
               {advanced ? "Hide" : "Show"} exact limits
@@ -156,12 +165,15 @@ export function NewTask() {
               <small className="muted">From {qd.providers} provider{qd.providers === 1 ? "" : "s"} online. Prices follow demand.</small>
             </>
           ) : (
-            <p className="muted">Checking providers…</p>
+            <div className="skeleton-rows" aria-busy>
+              <Skeleton h={14} />
+              <Skeleton h={14} w="70%" />
+              <Skeleton h={14} w="85%" />
+            </div>
           )}
-          <button type="submit" className="big" disabled={book.isPending || noBudget}>
-            {book.isPending ? "Booking…" : "Book task"}
-          </button>
-          <Notice text={book.error?.message} kind="error" />
+          <ProgressButton type="submit" className="big" disabled={noBudget} state={book.isPending ? "loading" : "idle"}>
+            {book.isPending ? "Booking" : "Book task"}
+          </ProgressButton>
         </aside>
       </form>
     </>

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
+import { motion, useReducedMotion } from "motion/react";
+import { CopyButton, Dots, Skeleton } from "../components/motion";
 import { Card, Notice, PageHeader, StatusBadge } from "../components/ui";
 import { clock, hashscan, hbar } from "../lib/format";
 import { useSession } from "../lib/session";
@@ -35,12 +37,26 @@ type Detail = {
 export function TaskDetail() {
   const { jobHash = "" } = useParams();
   const { account, api } = useSession();
+  const reduce = useReducedMotion();
   const q = useQuery({
     queryKey: ["task", jobHash, account],
     queryFn: () => api<Detail>(`/tasks/${jobHash}`),
     refetchInterval: (query) => (["done", "failed"].includes(query.state.data?.task.status ?? "") ? false : 4000),
   });
-  if (q.isPending) return <p className="muted">Loading…</p>;
+  if (q.isPending)
+    return (
+      <div className="detail-grid" aria-busy>
+        <div className="card skeleton-rows">
+          <Skeleton h={18} w="30%" />
+          <Skeleton h={90} />
+        </div>
+        <div className="card skeleton-rows">
+          <Skeleton h={18} w="40%" />
+          <Skeleton h={14} />
+          <Skeleton h={14} w="80%" />
+        </div>
+      </div>
+    );
   if (q.isError) return <Notice text={q.error.message} kind="error" />;
   const { task: t, provider: p } = q.data;
   const created = Math.floor(new Date(t.createdAt).getTime() / 1000);
@@ -75,7 +91,9 @@ export function TaskDetail() {
             ) : t.status === "failed" ? (
               <p className="warn">{t.failure}</p>
             ) : (
-              <p className="muted">The result appears here when the task finishes. This page updates by itself.</p>
+              <p className="muted waiting-line">
+                <Dots label="Waiting for the result" /> The result appears here when the task finishes. This page updates by itself.
+              </p>
             )}
           </Card>
           <Card title="Request">
@@ -92,10 +110,16 @@ export function TaskDetail() {
           <Card title="Progress">
             <ol className="timeline">
               {steps.map((s, i) => (
-                <li key={i} className={s.state}>
+                <motion.li
+                  key={`${i}-${s.state}`}
+                  className={s.state}
+                  initial={reduce ? false : { opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3, delay: i * 0.1, ease: [0.2, 0, 0, 1] }}
+                >
                   <span>{s.text}</span>
                   {s.when ? <time>{clock(s.when)}</time> : null}
-                </li>
+                </motion.li>
               ))}
             </ol>
           </Card>
@@ -133,7 +157,7 @@ export function TaskDetail() {
                 ) : (
                   "its Hedera topic"
                 )}
-                . Job fingerprint <code>{t.jobHash.slice(0, 12)}…</code>
+                . Job fingerprint <code>{t.jobHash.slice(0, 12)}…</code> <CopyButton value={t.jobHash} label="job fingerprint" />
               </li>
               {t.resultHash && (
                 <li>
