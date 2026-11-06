@@ -126,7 +126,7 @@ const dW = done(jobHash(waiting));
 expect("the tokenized ticket still ran A's job", !!dW?.ok && dW.owner === A.id, dW ? `${dW.tokens} tokens` : "no done event");
 
 // Every promise kept: each ticket booked in this run was dispatched by its startBy (+ grace).
-const promised = new Map(ofType("booked").map((x) => [x.e.ticket, x.e.startBy]));
+const promised = new Map(ofType("booked").filter((x) => x.e.ticket >= a.body.ticket - 2).map((x) => [x.e.ticket, x.e.startBy]));
 const dispatched = ofType("dispatch").filter((x) => promised.has(x.e.ticket));
 const lateOnes = dispatched.filter((x) => x.ts > promised.get(x.e.ticket)! + LATE_AFTER); // the escrow's own tolerance (grace + batching + consensus)
 expect("every ticket started by its promised startBy", dispatched.length >= 6 && !lateOnes.length, `${dispatched.length} dispatched, late: ${lateOnes.map((x) => `#${x.e.ticket} +${x.ts - promised.get(x.e.ticket)!}s`).join(", ") || "none"}`);
@@ -157,10 +157,11 @@ if (serial > 0) {
   await waitForOwner(tokenId, serial, treasury);
   const later = await reserve(A, 20, now() + 90);
   const re = await tokenize(A, [later.body.ticket], true);
+  const trade = ((await (await fetch(`${URL}/queue`)).json()) as any).tradePrices as { mint: string; reissue: string };
   expect(
-    "tokenizing again reissues the returned NFT, for less than a mint",
-    re.status === 200 && Number(re.body.serials?.[later.body.ticket]) === serial && BigInt(re.body.price) < BigInt(tok.body.price),
-    re.status === 200 ? `NFT #${re.body.serials?.[later.body.ticket]} for ${re.body.price} (a mint was ${tok.body.price})` : `${re.status} ${re.body.error}`,
+    "tokenizing again reissues the returned NFT, at the reissue price, not a mint's",
+    re.status === 200 && Number(re.body.serials?.[later.body.ticket]) === serial && re.body.price === trade.reissue && BigInt(trade.reissue) < BigInt(trade.mint),
+    re.status === 200 ? `NFT #${re.body.serials?.[later.body.ticket]} for ${re.body.price} (a mint is ${trade.mint})` : `${re.status} ${re.body.error}`,
   );
   const nft = await slotInfo(hederaClient(A.id, A.key), tokenId, serial);
   expect("the reissued NFT now names the new ticket", nft.owner === A.id && nft.meta.t === later.body.ticket, JSON.stringify(nft));

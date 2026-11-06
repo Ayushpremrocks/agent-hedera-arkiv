@@ -449,6 +449,7 @@ await serve(PORT, {
       maxRunSeconds: MAX_RUN_SECONDS,
       maxTokens: maxTokensWithin(MAX_RUN_SECONDS, SPEED),
       escrow: ESCROW || null,
+      tradePrices: { mint: PRICES.tokenize.toString(), reissue: PRICES.reissue.toString() }, // per ticket NFT
       graceSeconds: GRACE_SECONDS,
       tickets: Object.keys(tickets)
         .map(Number)

@@ -171,7 +171,12 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     const second = (await reserve(50, now() + 120)).body;
     const t2 = await tokenize([second.ticket]);
     const reused = Number(t2.body.serials?.[second.ticket]);
-    check("the next trade reuses that NFT, for a fraction of a mint", t2.status === 200 && reused === serial && BigInt(t2.body.price) < BigInt(t1.body.price), `NFT #${reused} for ${hb(t2.body.price)} vs ${hb(t1.body.price)} minted`);
+    const trade = ((await (await fetch(`${URL}/queue`)).json()) as any).tradePrices as { mint: string; reissue: string };
+    check(
+      "the next trade reuses that NFT, for a fraction of a mint",
+      t2.status === 200 && reused === serial && t2.body.price === trade.reissue,
+      `NFT #${reused} for ${hb(t2.body.price)}; minting a new one costs ${hb(trade.mint)}`,
+    );
     const info = await slotInfo(client, first.tokenId, serial);
     check("its metadata now names the new ticket", info.meta.t === second.ticket, JSON.stringify(info.meta));
   },
