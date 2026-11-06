@@ -1,332 +1,180 @@
-# Dani.ai (agent-hedera-arkiv) — Deep Dive
----
+# dani.ai
 
-## 1. What Is This Project?
+**AI jobs that run on time, and a market to trade your place in line.**
 
-**Dani.ai** is a decentralized **compute-slot marketplace** where:
+dani.ai is a market for GPU time aimed at AI agents. Every job gets a time it must start by. The payment waits in
+escrow until that promise is kept, and an agent that's running late can buy an earlier place from one that can wait.
+It runs on Hedera testnet, with Arkiv for discovery and public records.
 
-- A **Provider** sells time-boxed execution slots as **NFTs** on the Hedera Token Service (HTS).
-- **Agents** buy those slots (paying HBAR via the x402 HTTP payment protocol) and submit jobs to be run when their slot starts.
-- If an agent's slot is too late for its own deadline, it can **swap** its slot with an earlier one listed on **Arkiv** (a decentralized queryable data store), atomically exchanging both NFTs + HBAR in a single Hedera transaction.
-- A **web dashboard** (read-only, no keys) lets anyone watch the schedule, open offers, completed trades, and the signed on-chain log in real time.
-
-The three external pillars are:
-| Pillar | Role |
-|--------|------|
-| **Hedera** (testnet) | NFT ownership (HTS), HBAR payments, consensus log (HCS) |
-| **Arkiv** | Off-chain queryable index — provider profile, slot offers, trade records |
-| **x402** | HTTP 402 payment-channel protocol; both HBAR booking payments and atomic swap quoting use it |
+Built for EthGlobal Mumbai 2026 by Sudhanshu Bharti and Ayush Prem.
 
 ---
 
-## 2. Monorepo Structure
+## The problem
+
+GPU capacity is rented by the hour, and a queue makes no promise about when a job will run. AI agents work to
+deadlines, so an urgent job stuck behind one that could wait all day is a real failure, and today there's no way to
+move up.
+
+## How dani.ai works
+
+### 1. Every job gets a promised start time
+A provider measures its slowest speed when it starts up (every worker busy, long inputs, long outputs). From that, each
+job gets a run limit: `(startup + tokens ÷ slowest speed) × 1.25`. The provider plays its queue forward assuming every
+job uses its whole limit; where a new booking lands is its **start-by time**. Real jobs finish early, so tickets only
+ever start sooner. New bookings go to the back of the queue, so no existing promise ever moves.
+
+### 2. Jobs are never cut short
+A job that runs past its limit still finishes. It's already capped by its own token count, and only a model server
+that has hung is stopped. The provider absorbs an overrun: tickets behind it may start late, and the escrow credits
+them. The provider's speed estimate follows the last ten minutes of real jobs, so a burst of outside load makes new
+promises more cautious, and they recover once the load passes.
+
+### 3. Pay for what runs, through escrow
+Each provider sets its own prices by job size, for example up to 256 tokens 0.5¢, up to 1,024 tokens 1¢, up to 4,096
+tokens 2¢. Demand raises all of them together.
+- **Booking:** the buyer deposits the price of the band the job's maximum size falls in. The payment goes into
+  **escrow**, not to the provider.
+- **After the job runs:** the escrow charges the band the job actually used and returns the rest of the deposit.
+- **If the promise slips,** part of the charge comes back, judged by Hedera's consensus timestamps, never anyone's clock:
+
+| What happened | Back to the buyer |
+|---|---|
+| Started on time and delivered | nothing; the provider is paid |
+| Started up to 30 s late | 25% of the charge |
+| Started up to 60 s late | 50% of the charge |
+| Started later than that, failed, or never started | everything |
+
+### 4. A market to trade places
+An agent that will miss its deadline finds an earlier place on Arkiv, offered by an agent that can wait. The seller
+only accepts a later place that still meets its own deadline. Both places and the payment move in one atomic Hedera
+transaction, or nothing moves. Agents can also **reserve** capacity ahead at today's price, attach the job later, and
+resell the reservation if plans change.
+
+### 5. NFTs only when they're needed
+A booking is just a place in a provider's queue: nothing is minted. Only when a place is traded does it become an
+NFT, so the swap can be atomic. Once the ticket has started, the holder hands the NFT back. The next trade rewrites its
+metadata and reissues it (about $0.001) instead of minting a new one (about $0.02).
+
+### 6. Open to every provider
+Anyone with a GPU can join with one command and their own Hedera account; nobody else's keys are involved. Every
+provider has a public track record (promises kept, jobs done, refunds) computed from the messages it signed on
+Hedera, so it can't be faked.
+
+---
+
+## Built on Hedera and Arkiv
+
+| Network | What dani.ai uses it for |
+|---|---|
+| **Hedera** | x402 payments into escrow; escrow payouts and refunds; HTS ticket NFTs (minted only to trade, then reused); atomic swaps; one signed, batched HCS log per provider (bookings, starts, results, trades) |
+| **Arkiv** | Provider offers (model, speed, prices, next start); places offered for trade, queried by deadline and price; public task records with no private content. Everything expires on its own when it goes stale. |
+
+Instructions, inputs and results stay private to their owner. Only fingerprints (hashes) go on-chain, so anyone can
+check a result wasn't altered.
+
+---
+
+## Repository
 
 ```
-agent-hedera-arkiv-main/
-├── packages/
-│   ├── shared/      ← shared TypeScript library used by all packages
-│   ├── provider/    ← HTTP server: sells slots, runs jobs
-│   ├── agent/       ← CLI: books slots, sells or buys them
-│   └── web/         ← Vite SPA: live market dashboard (no keys)
-├── spikes/          ← standalone proof-of-concept scripts
-├── .env             ← secrets (never committed)
-└── .env.example     ← template
-```
-
----
-
-## 3. Package Breakdown
-
-### 3a. `packages/shared` — Shared Library
-
-The backbone. Every other package imports from `@qy/shared`. Modules:
-
-| File | Purpose |
-|------|---------|
-| [`env.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/env.ts) | Loads `.env`; `need(name)` throws if a var is missing; `role(name)` reads `NAME_ID` + `NAME_KEY` |
-| [`hedera.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/hedera.ts) | Hedera SDK helpers: `hederaClient`, `parseKey` (DER or raw ECDSA), Mirror Node queries, NFT metadata encode/decode, `waitForOwner` |
-| [`arkiv.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/arkiv.ts) | Arkiv SDK schemas (`ProviderProfile`, `SlotOffer`, `Trade`), `arkivReader`/`arkivWriter`, `offerFilter`, `findOffers` |
-| [`auth.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/auth.ts) | ECDSA request signing/verification for the HTTP API (`signRequest` / `verifyRequest`); replays are blocked with a 60-second window |
-| [`hcs.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/hcs.ts) | `postEvent` — signs and submits a typed `HcsEvent` to an HCS topic |
-| [`http.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/http.ts) | Tiny home-made JSON router (`serve(port, routes)`) |
-| [`job.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/job.ts) | `Job` type (`kind: "cpu"`, `seconds`, `label`), `parseJob`, `jobHash` (sha256 over canonical field order) |
-| [`swap.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/swap.ts) | `buildSwap` (buyer-side) and `checkSwap` (seller-side) for atomic NFT+HBAR TransferTransactions |
-| [`x402.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/x402.ts) | `hbarPayer` (x402 client) and `postPaid` (auto-handles 402 → pay → retry) |
-
----
-
-### 3b. `packages/provider` — The Slot Server
-
-**Entry:** [`packages/provider/src/index.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/provider/src/index.ts)
-
-#### What it does on startup
-1. Calls `ensureInfra` ([`chain.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/provider/src/chain.ts)) — creates the HTS NFT token (`QYSLOT`) and HCS topic on first run; loads IDs from `data/provider/infra.json` on subsequent runs.
-2. Rebuilds the in-memory slot schedule from all existing NFTs on the Mirror Node.
-3. Loads pending jobs from `data/provider/jobs.json` ([`store.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/provider/src/store.ts)).
-4. Publishes (or refreshes) its **ProviderProfile** entity on Arkiv so agents can discover it.
-5. Starts the HTTP server.
-
-#### HTTP routes
-| Route | Description |
-|-------|-------------|
-| `POST /book` | x402-gated booking. Without `PAYMENT-SIGNATURE` → returns HTTP 402 with price. With a valid payment → verifies HBAR, mints one slot NFT to the buyer, posts `booked` to HCS. Price doubles for every fully-booked time window (exponential capacity pricing). |
-| `POST /bind` | Let an account that already holds a slot replace its pending job. No payment needed. |
-
-#### Slot dispatch
-- Each slot's start time is registered as a `setTimeout`.
-- When it fires: looks up the NFT owner via consensus (not Mirror, to catch last-second swaps), runs the pending job in a worker thread ([`runner.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/provider/src/runner.ts)), posts `done` to HCS.
-- The worker is **force-terminated** 1.5 seconds before the slot ends, so jobs can never bleed into the next slot.
-
-#### CPU Job simulation
-The `cpu` job type hashes a seed with SHA-256 in a tight loop for `job.seconds` seconds inside a Node.js worker thread. The result digest proves execution happened. This is a **demo/simulation** — a real system would run actual compute workloads.
-
----
-
-### 3c. `packages/agent` — The Agent CLI
-
-**Entry:** [`packages/agent/src/index.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/agent/src/index.ts)
-
-Runs in two modes selected by a positional argument:
-
-#### `sell` mode (flexible agent — has time to spare)
-1. Books a slot from the provider via x402 (`POST /book`).
-2. If the slot already meets its own deadline → does nothing and exits.
-3. Otherwise, publishes a `SlotOffer` entity on Arkiv (expires 15 s before the slot starts).
-4. Starts an HTTP server at `--port` with a **swap endpoint** (`POST /offers/:serial/swap`):
-   - **Without** `body.tx` → returns a 402-shaped quote (custom `qy-atomic-swap` scheme).
-   - **With** `body.tx` (buyer-signed swap bytes) → validates with `checkSwap`, co-signs, submits; logs the trade to HCS and Arkiv.
-
-#### `buy` mode (urgent agent — deadline is tight)
-1. Books a slot.
-2. If the slot already meets the deadline → exits.
-3. Queries Arkiv with `findOffers` for cheaper/earlier slots that meet both sides' deadlines.
-4. For each matching offer: contacts the seller's swap endpoint, gets a quote, builds and signs the atomic swap transaction, sends the bytes back to the seller to co-sign and submit.
-
-#### Security model
-- Every HTTP request to `/book` and `/bind` carries a **cryptographic signature** (`signRequest`) over `action|account|subject|timestamp` using the sender's Hedera ECDSA key.
-- The provider verifies it against the account's on-chain public key (Mirror Node).
-- Swap transactions are built by the buyer, verified field-by-field by the seller (`checkSwap`), so neither side can sneak in extra transfers.
-
----
-
-### 3d. `packages/web` — Live Dashboard (Read-Only)
-
-**Entry:** [`packages/web/src/main.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/web/src/main.ts) — Vite SPA, no backend, no keys.
-
-Refreshes every **6 seconds** by polling:
-- **Mirror Node** for all slot NFTs + HCS topic messages
-- **Arkiv** for live `SlotOffer` and `Trade` entities
-
-#### UI sections
-| Section | Shows |
-|---------|-------|
-| **Schedule** | SVG timeline of slots per worker. Color = owner. Arcs = swaps. Status = waiting / running / ran / killed |
-| **Slots for sale** | Live Arkiv `qy_offer` table with seller authorship check |
-| **Run the buyer's query** | Interactive form to simulate the exact Arkiv query a buying agent would run |
-| **Trades** | Completed `qy_trade` records with HashScan links |
-| **Signed log** | Last 30 HCS messages with ECDSA signature verification in-browser |
-
----
-
-## 4. Arkiv Data Schemas
-
-Three named schemas (defined in [`shared/src/arkiv.ts`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/packages/shared/src/arkiv.ts)):
-
-```
-ProviderProfile (qy_provider)
-  provider      str indexed    — Hedera account id
-  token_id      str            — HTS NFT token
-  topic_id      str            — HCS log topic
-  slot_seconds  u64            — slot duration
-  booking_url   str            — HTTP endpoint
-
-SlotOffer (qy_offer)
-  provider      str indexed
-  slot_serial   u64 indexed
-  slot_start    u64 indexed
-  latest_ok_start u64 indexed  — seller's deadline - slot_seconds
-  min_price     u64 indexed    — tinybars
-  seller        str
-  endpoint      str            — seller's swap HTTP endpoint
-  job_hash      str
-
-Trade (qy_trade)
-  provider      str indexed
-  seller_serial u64 indexed
-  buyer_serial  u64 indexed
-  price         u64 indexed
-  swap_tx       str            — single atomic Hedera transaction id
-  hcs_seq       str
+packages/
+  shared/    types and helpers used everywhere: Hedera, Arkiv, x402, HCS log, escrow rules, track records
+  provider/  sells GPU time: queue, promises, streaming model runner, tokenizing, joining (provider:join)
+  agent/     the agent: books, trades, reserves, verifies results; also the CLI and the fleet runner
+  host/      runs one agent per signed-in user, the escrow keeper, and the API for the web app (Postgres)
+  web/       React app: landing, the signed-in app, Network status, provider pages, Sell GPU time
+spikes/      live checks and the demo (provider-check, host-check, contention-check, demo, ...)
+presentation/  the pitch deck, video script and logo
 ```
 
 ---
 
-## 5. HCS Event Types
+## Run it locally
 
-All events are posted to the topic signed by the sender (verified on-chain key):
+You need Node.js 22, pnpm, [Ollama](https://ollama.com), a Hedera testnet account with an ECDSA key
+([portal.hedera.com](https://portal.hedera.com)) and an Arkiv access key
+([hub.arkiv.network/access-keys](https://hub.arkiv.network/access-keys)).
 
-| Event | Emitted by | Meaning |
-|-------|-----------|---------|
-| `booked` | Provider | New slot NFT minted and paid for |
-| `bound` | Provider | Agent updated its pending job |
-| `dispatch` | Provider | Slot's start time reached; job fired (or idled) |
-| `done` | Provider | Job finished or was killed |
-| `trade` | Seller | Atomic swap settled on Hedera |
-| `refund` | Provider | Payment received but minting failed; HBAR returned |
-
----
-
-## 6. Full System Workflow
-
-```mermaid
-sequenceDiagram
-    participant A as Agent (buyer/seller)
-    participant P as Provider HTTP
-    participant H as Hedera Network
-    participant AK as Arkiv
-    participant W as Web Dashboard
-
-    Note over P,H: Startup: ensureInfra() creates token + topic
-    P->>AK: publish ProviderProfile
-
-    A->>P: POST /book (no payment header)
-    P-->>A: HTTP 402 + PAYMENT-REQUIRED header (price in tinybars)
-    A->>H: sign x402 HBAR payment
-    A->>P: POST /book + PAYMENT-SIGNATURE header
-    P->>H: settle HBAR transfer via x402 facilitator
-    P->>H: mint slot NFT → treasury → agent account
-    P->>H: post "booked" to HCS topic
-    P-->>A: { serial, start, tokenId, topicId }
-
-    Note over A: Sell mode: slot is earlier than needed
-    A->>AK: createEntity(SlotOffer) expires before slot start
-    A->>A: start swap HTTP server
-
-    Note over A: Buy mode: slot is too late
-    A->>AK: findOffers() — query matching offers
-    A->>A: POST seller's /offers/:serial/swap (no tx)
-    A-->>A: 402 quote received
-    A->>H: build & sign atomic TransferTransaction
-    A->>A: POST seller's /offers/:serial/swap (with tx bytes)
-    A->>H: seller co-signs + submits (both NFTs + HBAR in one tx)
-    A->>H: post "trade" to HCS
-    A->>AK: delete SlotOffer, create Trade
-
-    Note over P: At slot start time
-    P->>H: query NFT owner (consensus, not Mirror)
-    P->>P: run job in worker thread
-    P->>H: post "done" to HCS
-
-    W->>H: poll Mirror Node (NFTs + HCS messages)
-    W->>AK: poll offers + trades
-    W->>W: render SVG schedule + tables
-```
-
----
-
-## 7. How to Run
-
-### Prerequisites
-- **Node.js** ≥ 20 and **pnpm** 11.x
-- A testnet account at [portal.hedera.com](https://portal.hedera.com) (ECDSA key type)
-- A free API key from [hub.arkiv.network/access-keys](https://hub.arkiv.network/access-keys)
-- tGLM faucet tokens at [hub.arkiv.network/faucet](https://hub.arkiv.network/faucet)
-
-### Step-by-step
-
-#### 1. Install dependencies
-```powershell
-cd agent-hedera-arkiv-main
+```bash
 pnpm install
+cp .env.example .env              # fill in HEDERA_OPERATOR_ID, HEDERA_OPERATOR_KEY, ARKIV_ACCESS_KEY, X402_FACILITATOR_URL
+pnpm setup:accounts               # creates a local provider, treasury and test agents, funded from your operator account
+ollama pull qwen2.5:0.5b-instruct
 ```
 
-#### 2. Configure `.env`
-Edit [`.env`](file:///c:/Users/ayush/OneDrive/Desktop/agent-hedera-arkiv/agent-hedera-arkiv-main/.env) (already exists). Fill in:
-```env
-HEDERA_OPERATOR_ID=0.0.xxxx
-HEDERA_OPERATOR_KEY=<your ECDSA private key>
-ARKIV_ACCESS_KEY=<from hub.arkiv.network>
-X402_FACILITATOR_URL=https://api.testnet.blocky402.com
+Then, each in its own terminal:
+
+```bash
+pnpm host       # agents for signed-in users, the escrow (it writes ESCROW_ID to .env on first run), API on :4100
+pnpm provider   # a provider on :4000, paid through that escrow
+pnpm web        # the web app on :5173; sign in with HashPack
 ```
 
-#### 3. Create testnet sub-accounts
-```powershell
-pnpm setup:accounts
-```
-This script creates **PROVIDER, TREASURY, AGENT_A, AGENT_B, AGENT_C** accounts funded from your operator account and **appends** their IDs and keys to `.env`. Re-running is safe.
+The `AGENT_A/B/C` accounts that `setup:accounts` creates are local test fixtures for the checks and demos. Real users
+never need them: each person who signs in gets their own agent account.
 
-> [!IMPORTANT]
-> After setup:accounts runs, fund your **operator's EVM address** (printed in output) at the Arkiv faucet, then run `pnpm setup:accounts` once more to distribute tGLM to all agents.
+### Become a provider (any machine)
 
-#### 4. Run the provider (keep running in a terminal)
-```powershell
-pnpm provider
-```
-On first run this creates the HTS token and HCS topic on-chain, then publishes the provider's Arkiv profile and starts listening on **port 4000**.
-
-#### 5. Run the web dashboard (keep running in another terminal)
-```powershell
-pnpm web
-```
-Opens at **http://localhost:5173**. Watch the live schedule, offers, trades, and signed log.
-
-#### 6. Run agents
-
-**Flexible seller** (Agent B lists its slot for sale):
-```powershell
-pnpm agent sell --as AGENT_B --deadline 900 --price 2000000 --port 4101
-# deadline: 900s = 15 min from now; price: 0.02 HBAR minimum
+```bash
+pnpm provider:join --account 0.0.YOUR_ID --key YOUR_ECDSA_KEY --url http://YOUR_HOST:4000 \
+  --name "My GPU" --prices 256:0.5,1024:1,4096:2 --escrow 0.0.ESCROW_ID
+QY_ENV=.env.provider pnpm provider
 ```
 
-**Urgent buyer** (Agent A needs an earlier slot):
-```powershell
-pnpm agent buy --as AGENT_A --deadline 150 --budget 5000000
-# deadline: 150s = 2.5 min from now; budget: 0.05 HBAR max
-```
-
-**Bind a new job without re-buying** (while holding a slot):
-```powershell
-# The /bind route is called internally; you can also POST directly
-```
-
-#### 7. Run tests
-```powershell
-pnpm test
-```
-Runs Node's built-in test runner on `*.test.ts` files via `tsx`.
-
-#### 8. Run spikes (standalone experiments)
-```powershell
-pnpm spike:arkiv    # Arkiv write/query/expiry test
-pnpm spike:x402    # x402 HBAR payment in-process
-pnpm spike:nft     # Atomic NFT swap demo
-```
-
-### Environment variable reference
-
-| Variable | Required by | Description |
-|----------|------------|-------------|
-| `HEDERA_OPERATOR_ID` | setup script | Your testnet account |
-| `HEDERA_OPERATOR_KEY` | setup script | ECDSA private key (DER or hex) |
-| `ARKIV_ACCESS_KEY` | provider, agents | Arkiv API key |
-| `X402_FACILITATOR_URL` | provider | x402 facilitator endpoint |
-| `PROVIDER_ID` / `PROVIDER_KEY` | provider, agents | Added by setup:accounts |
-| `TREASURY_ID` / `TREASURY_KEY` | provider | Added by setup:accounts |
-| `AGENT_A_ID/KEY`, `AGENT_B_ID/KEY`, `AGENT_C_ID/KEY` | agents, web | Added by setup:accounts |
-| `PROVIDER_PORT` | provider | Defaults to 4000 |
-| `SLOT_SECONDS` | provider | Slot length; defaults to 30 |
-| `WORKERS` | provider | Parallel slots per start time; defaults to 2 |
+The join command checks the key controls the account, creates the provider's own treasury, and writes everything to
+`.env.provider`. The web app's **Sell GPU time** page shows the escrow account to use. Agents must be able to reach the
+URL you give: a LAN address for agents on your network, a public address or tunnel for everyone.
 
 ---
 
-## 8. Key Design Decisions
+## Demo and checks
 
-| Decision | Why |
-|----------|-----|
-| **NFT = slot ownership** | Ownership is settled at Hedera consensus, not a database. A swap just before start still counts. |
-| **Job hash on-chain, job payload off-chain** | Privacy + size. Only the sha256 is in the NFT metadata; the actual job lives on the provider's disk. |
-| **Atomic swap transaction** | Buyer builds, seller validates + co-signs in one `TransferTransaction`. It either fully settles or fully fails — no escrow, no intermediary. |
-| **Exponential booking price** | `PRICE_FLOOR << 2^fullWindows` — idle capacity is cheap; hoarding is punished. |
-| **x402 for payments** | Standard HTTP 402 flow; the provider returns `PAYMENT-REQUIRED`, the agent pays and retries with `PAYMENT-SIGNATURE`. |
-| **HCS for audit log** | Anyone can verify the log because every message carries the sender's signature against their on-chain key. |
-| **Arkiv for discovery + querying** | Avoids a centralized database. `findOffers` runs a compound range query (deadline, cutoff, price) entirely inside Arkiv. |
+```bash
+pnpm demo                 # narrated, live on testnet: guaranteed start, pay for what runs, reserving ahead, NFT reuse
+pnpm demo refund          # broken promises: a 25% credit and a full refund (start the provider with DEMO_FAULTS=1)
+pnpm demo load            # outside load on the same GPU: jobs slow down, nobody's job is killed
+pnpm test                 # unit tests: scheduling, escrow rules, pricing, track records, agent policy
+pnpm typecheck
+```
+
+Every demo step prints PASS or FAIL and links the real payment and payout transactions on HashScan. Deeper live
+checks: `spikes/provider-check.ts` (40 checks against a running provider), `spikes/host-check.ts` (the hosted flow) and
+`spikes/contention-check.ts` (`FLOOD=0/3/8` outside generations).
+
+`DEMO_FAULTS=1` turns on a pause switch only the provider's own key can use, so a demo can make it miss promises on
+purpose. Leave it off in normal use.
+
+---
+
+## Configuration
+
+Set these in `.env` (or `.env.provider` for a provider joined with `provider:join`).
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `HEDERA_OPERATOR_ID`, `HEDERA_OPERATOR_KEY` | setup, host | Your testnet account; pays to create new user agents |
+| `ARKIV_ACCESS_KEY` | all | Arkiv API key (optional; without it, the public rate-limited endpoint) |
+| `X402_FACILITATOR_URL` | provider | x402 facilitator, e.g. `https://api.testnet.blocky402.com` |
+| `HOST_SECRET` | host | Master secret every hosted agent's key is derived from (created on first run) |
+| `ESCROW_ID` | provider, agents | The escrow bookings are paid into (written by the host) |
+| `DATABASE_URL` | host | Postgres; without it, an embedded Postgres (PGlite) in `data/host` |
+| `PROVIDER_PORT`, `PROVIDER_URL`, `PROVIDER_LABEL` | provider | Where it listens, the URL agents use, its display name |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | provider | Any OpenAI-compatible model server (default: local Ollama) |
+| `WORKERS` | provider | Jobs run at once (default 2) |
+| `PRICE_BANDS` | provider | Prices by job size in US cents, e.g. `256:0.5,1024:1,4096:2` |
+| `MAX_RUN_SECONDS` | provider | Longest run limit a job may have (default 30) |
+| `SPEED_WINDOW_SECONDS` | provider | How long a slow job keeps promises cautious (default 600) |
+| `DEMO_FAULTS` | provider | `1` enables the demo pause switch |
+
+---
+
+## Limits today, and what's next
+
+- **The escrow keeper is a trusted custodian.** Its rules are public and every payout can be re-checked from the log.
+  A Hedera smart contract could hold the money trustlessly, at about 1¢ of gas per ticket today.
+- **Providers sign their own start times and token counts.** The time that counts is Hedera's timestamp on that
+  message, and buyers can re-count tokens from the result they receive.
+- **One provider per GPU** keeps promises reliable; other software on the same card slows jobs down.
+- **Next:** ENS names for every agent and provider, GPU providers rented on the Golem Network, and API keys so
+  developers can book from their own code.
