@@ -211,7 +211,7 @@ async function sell() {
       .createEntity(
         Trade,
         { provider: providerId, seller_serial: u64(serial), buyer_serial: u64(buyerSerial), price: u64(minPrice), swap_tx: swapTx, hcs_seq: hcsSeq },
-        { expiration: ExpirationTime.fromDays(7) },
+        { expiration: ExpirationTime.fromDays(1) },
       )
       .catch((e) => console.error("Arkiv trade:", e.message));
     return { body: { swapTx, hcsSeq, hashscan: hashscan("transaction", swapTx) } };

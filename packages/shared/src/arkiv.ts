@@ -36,9 +36,10 @@ export const Trade = defineSchema("qy_trade", {
   hcs_seq: str(),
 });
 
-const chain = () => rabdi({ accessKey: process.env.ARKIV_ACCESS_KEY ?? "" });
+// An empty key uses Arkiv's public (rate-limited) endpoint; the browser passes its own or none.
+const chain = (accessKey = process.env.ARKIV_ACCESS_KEY ?? "") => rabdi({ accessKey });
 
-export const arkivReader = () => createPublicClient({ chain: chain(), transport: http() });
+export const arkivReader = (accessKey?: string) => createPublicClient({ chain: chain(accessKey), transport: http() });
 
 export function arkivWriter(evmKey: `0x${string}`) {
   return createWalletClient({ chain: chain(), transport: http(), account: privateKeyToAccount(evmKey) });
