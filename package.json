@@ -9,7 +9,8 @@
     "spike:arkiv": "tsx spikes/a-arkiv.ts",
     "spike:x402": "tsx spikes/b-x402.ts",
     "spike:nft": "tsx spikes/c-nft-swap.ts",
-    "provider": "pnpm -C packages/provider start"
+    "provider": "pnpm -C packages/provider start",
+    "agent": "pnpm -C packages/agent start"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

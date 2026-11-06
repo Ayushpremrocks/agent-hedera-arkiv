@@ -53,7 +53,7 @@ const { tokenId, topicId } = a.body;
 console.log("owner of A's slot on Mirror:", await nftOwner(tokenId, a.body.serial).catch(() => "(not yet indexed)"));
 
 const last = Math.max(a.body.start, b.body.start, c.body.start);
-const wait = last * 1000 - Date.now() + 15_000;
+const wait = (last + Number(process.env.SLOT_SECONDS ?? 30)) * 1000 - Date.now() + 10_000; // past slot end: the kill lands there
 console.log(`waiting ${Math.round(wait / 1000)}s for both slots to run...`);
 await new Promise((r) => setTimeout(r, wait));
 

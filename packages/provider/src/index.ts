@@ -178,7 +178,12 @@ await serve(PORT, {
 
     const quote = price();
     const header = headers["payment-signature"];
-    const payload = typeof header === "string" ? decodePaymentSignatureHeader(header) : null;
+    let payload = null;
+    try {
+      if (typeof header === "string") payload = decodePaymentSignatureHeader(header);
+    } catch {
+      throw new HttpError(400, "malformed PAYMENT-SIGNATURE header");
+    }
     if (!payload || BigInt(payload.accepted?.amount ?? 0) < quote) {
       // Price may have risen since the client's quote: no settle happened, so just quote again.
       const required = await x402.createPaymentRequiredResponse(await requirements(quote), { url: `${BOOKING_URL}/book` });

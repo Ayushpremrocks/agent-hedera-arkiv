@@ -8,6 +8,7 @@
   "dependencies": {
     "@arkiv-network/sdk": "1.0.1",
     "@hiero-ledger/sdk": "2.90.1",
-    "@qy/shared": "workspace:*"
+    "@qy/shared": "workspace:*",
+    "@x402/core": "2.30.0"
   }
 }

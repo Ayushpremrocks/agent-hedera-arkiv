@@ -29,6 +29,9 @@ importers:
       '@qy/shared':
         specifier: workspace:*
         version: link:../shared
+      '@x402/core':
+        specifier: 2.30.0
+        version: 2.30.0
 
   packages/provider:
     dependencies:
