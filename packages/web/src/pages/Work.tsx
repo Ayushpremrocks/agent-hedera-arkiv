@@ -6,7 +6,7 @@ import { clock, hashscan, hbar, toTinybars } from "../lib/format";
 import { useSession } from "../lib/session";
 import { approveBudget } from "../lib/wallet";
 
-type Me = { account: string; agent: null | { id: string; arkivKey: string | null; balance: string; allowance: string; stats: Record<string, any> } };
+type Me = { account: string; mirrorDown?: boolean; agent: null | { id: string; arkivKey: string | null; balance: string | null; allowance: string | null; stats: Record<string, any> } };
 type TaskRow = { jobHash: string; label: string; status: string; deadline: number; providerName: string | null; serial: number | null; onTime: boolean | null; failure: string | null; preview: string | null };
 
 export function Work() {
@@ -53,7 +53,8 @@ export function Work() {
   return (
     <>
       <Notice text={notice?.text} kind={notice?.kind} />
-      {BigInt(agent.allowance) === 0n && <Notice text="Approve a budget so your agent can book GPU time." />}
+      {me.data.mirrorDown && <Notice text="Hedera's Mirror Node isn't answering, so your balances can't be shown right now. Your tasks keep running; this page catches up when it's back." />}
+      {agent.allowance === "0" && <Notice text="Approve a budget so your agent can book GPU time." />}
       <Section
         title="Your agent"
         intro={

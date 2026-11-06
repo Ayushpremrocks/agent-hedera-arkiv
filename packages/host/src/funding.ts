@@ -7,18 +7,31 @@ import { HttpError, MIRROR } from "@qy/shared";
 export const FLOAT = 50_000_000n; // 0.5 HBAR the agent keeps for network fees
 const SWEEP_ABOVE = 200_000_000n; // send back anything over 2 HBAR
 
+/** The Mirror Node is down or failing: callers should say "unavailable", never guess a number. */
+export class MirrorDown extends HttpError {
+  constructor(what: string, status: number) {
+    super(503, `Hedera's Mirror Node isn't answering (${status}) so ${what} can't be checked right now. Try again shortly.`);
+  }
+}
+
+/** GET from the Mirror Node, retrying once after a short pause (its outages are often brief). */
+async function mirror(path: string, what: string): Promise<any> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${MIRROR}${path}`, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+    if (res?.ok) return res.json();
+    if (attempt >= 1) throw new MirrorDown(what, res?.status ?? 0);
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
 /** HBAR balance from the Mirror Node (the SDK's balance query is retired); a few seconds behind, which the float absorbs. */
 export async function balanceOf(_client: Client, id: string): Promise<bigint> {
-  const res = await fetch(`${MIRROR}/accounts/${id}?transactions=false`);
-  if (!res.ok) throw new Error(`balance of ${id}: Mirror ${res.status}`);
-  return BigInt(((await res.json()) as any).balance.balance);
+  return BigInt((await mirror(`/accounts/${id}?transactions=false`, "the agent's balance")).balance.balance);
 }
 
 /** What's left of the HBAR allowance `owner` granted `spender` (Mirror Node, a few seconds behind). */
 export async function allowanceLeft(owner: string, spender: string): Promise<bigint> {
-  const res = await fetch(`${MIRROR}/accounts/${owner}/allowances/crypto?spender.id=${spender}`);
-  if (!res.ok) return 0n;
-  const a = ((await res.json()) as any).allowances?.[0];
+  const a = (await mirror(`/accounts/${owner}/allowances/crypto?spender.id=${spender}`, "your budget")).allowances?.[0];
   return a ? BigInt(a.amount) : 0n;
 }
 

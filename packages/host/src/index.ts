@@ -177,8 +177,13 @@ await serve(PORT, {
   "GET /api/me": async ({ headers }) => {
     const { account, row, h } = await mine(headers);
     if (!row || !h) return { body: { account, agent: null } };
-    const [balance, allowance] = await Promise.all([balanceOf(h.client, row.id), allowanceLeft(account, row.id)]);
-    return { body: { account, agent: { id: row.id, arkivKey: row.arkivKey, balance: balance.toString(), allowance: allowance.toString(), stats: h.agent.state.stats } } };
+    // Balances come from the Mirror Node; if it's down, say so instead of failing the whole page.
+    const [balance, allowance] = await Promise.allSettled([balanceOf(h.client, row.id), allowanceLeft(account, row.id)]);
+    const value = (r: PromiseSettledResult<bigint>) => (r.status === "fulfilled" ? r.value.toString() : null);
+    const mirrorDown = balance.status === "rejected" || allowance.status === "rejected";
+    return {
+      body: { account, mirrorDown, agent: { id: row.id, arkivKey: row.arkivKey, balance: value(balance), allowance: value(allowance), stats: h.agent.state.stats } },
+    };
   },
   "POST /api/agent": async ({ headers }) => {
     const { account, row } = await mine(headers);

@@ -1,8 +1,8 @@
 // HashPack (or any Hedera wallet) over WalletConnect: connect, sign the host's sign-in message, and
 // approve the agent's budget as an HBAR allowance. Keys never leave the wallet.
 import "./polyfill";
-import { DAppConnector, HederaChainId, HederaJsonRpcMethod, HederaSessionEvent } from "@hashgraph/hedera-wallet-connect";
-import { AccountAllowanceApproveTransaction, Hbar, LedgerId } from "@hiero-ledger/sdk";
+import { DAppConnector, HederaChainId, HederaJsonRpcMethod, HederaSessionEvent, transactionToBase64String } from "@hashgraph/hedera-wallet-connect";
+import { AccountAllowanceApproveTransaction, Client, Hbar, LedgerId, TransactionId } from "@hiero-ledger/sdk";
 
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string;
 
@@ -45,9 +45,14 @@ export async function signMessage(account: string, message: string): Promise<str
 
 /** Let `agent` spend up to `hbar` from the user's account. Setting it again replaces the old amount. */
 export async function approveBudget(account: string, agent: string, hbar: number) {
-  const signer = connector.signers.find((s) => s.getAccountId().toString() === account);
-  if (!signer) throw new Error("reconnect your wallet");
-  const tx = await new AccountAllowanceApproveTransaction().approveHbarAllowance(account, agent, new Hbar(hbar)).freezeWithSigner(signer as any);
-  const result = await tx.executeWithSigner(signer as any);
-  return result.transactionId.toString();
+  await init();
+  if (!connector.signers.some((s) => s.getAccountId().toString() === account)) throw new Error("Your wallet session ended. Disconnect and connect HashPack again.");
+  // The wallet signer only sets a transaction id, never the nodes, so freeze it fully here: the
+  // testnet client supplies the node list (no network call), then HashPack signs and submits it.
+  const tx = new AccountAllowanceApproveTransaction()
+    .approveHbarAllowance(account, agent, new Hbar(hbar))
+    .setTransactionId(TransactionId.generate(account))
+    .freezeWith(Client.forTestnet());
+  const res: any = await connector.signAndExecuteTransaction({ signerAccountId: `hedera:testnet:${account}`, transactionList: transactionToBase64String(tx as any) });
+  return String(res?.result?.transactionId ?? res?.transactionId ?? "");
 }
