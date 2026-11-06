@@ -13,7 +13,8 @@
     "agent": "pnpm -C packages/agent start",
     "fleet": "pnpm -C packages/agent fleet",
     "task": "pnpm -C packages/agent task",
-    "web": "pnpm -C packages/web dev"
+    "web": "pnpm -C packages/web dev",
+    "host": "pnpm -C packages/host start"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

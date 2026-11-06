@@ -12,5 +12,10 @@
     "@hiero-ledger/sdk": "2.90.1",
     "@qy/shared": "workspace:*",
     "@x402/core": "2.30.0"
+  },
+  "exports": {
+    "./agent": "./src/agent.ts",
+    "./hub": "./src/hub.ts",
+    "./workloads": "./src/workloads.ts"
   }
 }

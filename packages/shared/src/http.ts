@@ -24,6 +24,16 @@ export function serve(port: number, routes: Record<string, Handler>) {
       res.writeHead(status, { "content-type": "application/json", "access-control-allow-origin": "*", ...headers });
       res.end(JSON.stringify(body));
     };
+    if (req.method === "OPTIONS") {
+      // Browser preflight for JSON bodies and Authorization headers.
+      res.writeHead(204, {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-allow-headers": "content-type, authorization, payment-signature",
+        "access-control-max-age": "86400",
+      });
+      return res.end();
+    }
     try {
       const url = new URL(req.url ?? "/", "http://x");
       const segs = url.pathname.split("/");

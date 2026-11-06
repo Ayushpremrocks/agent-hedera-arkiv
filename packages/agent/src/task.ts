@@ -39,7 +39,7 @@ if (o.list) {
     const when = new Date(t.deadline * 1000).toLocaleTimeString();
     const outcome = t.onTime === null ? t.status : t.onTime ? "delivered on time" : "delivered late";
     console.log(`\n## ${t.label} (due ${when}, slot ${t.slot ?? "-"}): ${outcome}`);
-    if (t.result) console.log(t.result.split("\n").slice(4).join("\n").trim()); // skip the file's header
+    if (t.result) console.log(t.result);
   }
   if (!r.body.tasks.length) console.log("no tasks yet");
 } else {

@@ -1,0 +1,15 @@
+{
+  "name": "@qy/host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hiero-ledger/proto": "2.32.0",
+    "@hiero-ledger/sdk": "2.90.1",
+    "@qy/agent": "workspace:*",
+    "@qy/shared": "workspace:*",
+    "viem": "^2.57.16"
+  }
+}
