@@ -188,8 +188,11 @@ async function refundTicket(n: number, reason: string) {
  * Start tickets on free workers, earliest promise first. A ticket may jump ahead of an early
  * reservation that isn't due yet only if that keeps every promise (see canStart).
  */
+// Demo fault injection (DEMO_FAULTS=1 only): no ticket starts before this, so promises are broken on purpose.
+let pausedUntil = 0;
 function pump() {
   for (const n of pending()) if (now() > tickets[n].startBy + GRACE_SECONDS) refundTicket(n, `ticket #${n} missed its startBy`);
+  if (now() < pausedUntil) return;
   for (;;) {
     const idle = WORKERS - runningTickets().length;
     if (idle <= 0) return;
@@ -519,6 +522,21 @@ await serve(PORT, {
   },
 
   /** Drop all of the caller's queued jobs, e.g. when an agent starts over. Its tickets stay its own. */
+  /**
+   * Demo only, and only with DEMO_FAULTS=1: stop starting tickets for `seconds`, so they miss their
+   * promises on purpose and the escrow's lateness credits and refunds can be shown. Signed by this
+   * provider's own key, so nobody else can pause it.
+   */
+  "POST /admin/pause": async ({ body }) => {
+    if (process.env.DEMO_FAULTS !== "1") throw new HttpError(404, "not found");
+    const seconds = Number(body?.seconds);
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) throw new HttpError(400, "seconds must be 1..300");
+    if ((await signed("pause", String(seconds), body)) !== P.id) throw new HttpError(403, "only the provider itself can pause it");
+    pausedUntil = now() + seconds;
+    console.log(`DEMO FAULT: not starting tickets for ${seconds}s`);
+    return { body: { pausedUntil } };
+  },
+
   "POST /jobs/clear": async ({ body }) => ({ body: { cleared: clearQueue(await signed("clear", "all", body)) } }),
 
   /** The job's result, only for the account that booked it. Its sha256 is in the job's `done` event. */

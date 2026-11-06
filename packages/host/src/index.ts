@@ -215,6 +215,11 @@ await serve(PORT, {
 
   // ---- the escrow: its account and what it holds, paid out and refunded ----
   "GET /api/escrow": async () => ({ body: { account: escrow.id, ...escrow.stats() } }),
+  "GET /api/escrow/:provider/:ticket": async ({ params }) => {
+    const e = escrow.entry(params.provider, Number(params.ticket));
+    if (!e) throw new HttpError(404, "the escrow has no record of that ticket (yet)");
+    return { body: e };
+  },
 
   // ---- sign in ----
   "POST /api/auth/challenge": async ({ body }) => ({ body: challenge(body?.account) }),
