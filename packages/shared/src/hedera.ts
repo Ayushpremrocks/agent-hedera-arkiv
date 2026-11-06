@@ -1,4 +1,4 @@
-import { AccountId, Client, PrivateKey } from "@hiero-ledger/sdk";
+import { AccountId, Client, NftId, PrivateKey, TokenId, TokenNftInfoQuery } from "@hiero-ledger/sdk";
 
 export const MIRROR = "https://testnet.mirrornode.hedera.com/api/v1";
 export const hashscan = (kind: "transaction" | "token" | "topic" | "account", id: string) =>
@@ -26,17 +26,30 @@ async function mirror<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+type MirrorAccount = { evm_address: string; key: { _type: string; key: string } | null };
+
 /** An account's ECDSA public key (hex) from the Mirror Node. */
 export async function accountKey(id: string): Promise<string> {
-  const a = await mirror<{ key: { _type: string; key: string } | null }>(`/accounts/${id}`);
+  const a = await mirror<MirrorAccount>(`/accounts/${id}`);
   if (a.key?._type !== "ECDSA_SECP256K1") throw new Error(`${id} has no ECDSA key`);
   return a.key.key;
+}
+
+/** The EVM address an account signs Arkiv entities with (lowercase 0x hex). */
+export async function accountEvm(id: string): Promise<string> {
+  return (await mirror<MirrorAccount>(`/accounts/${id}`)).evm_address.toLowerCase();
 }
 
 /** Slot NFT metadata: start time and job hash. Must stay under Hedera's 100-byte limit. */
 export type SlotMeta = { s: number; h: string };
 export const encodeSlot = (m: SlotMeta) => Buffer.from(JSON.stringify(m));
 export const decodeSlot = (b64: string): SlotMeta => JSON.parse(Buffer.from(b64, "base64").toString());
+
+/** Owner and metadata of a slot straight from consensus (no Mirror lag). Costs a tiny query fee. */
+export async function slotInfo(client: Client, tokenId: string, serial: number) {
+  const [nft] = await new TokenNftInfoQuery().setNftId(new NftId(TokenId.fromString(tokenId), serial)).execute(client);
+  return { owner: nft.accountId.toString(), meta: JSON.parse(Buffer.from(nft.metadata ?? []).toString()) as SlotMeta };
+}
 
 export type MirrorNft = { serial_number: number; account_id: string; metadata: string; deleted: boolean };
 

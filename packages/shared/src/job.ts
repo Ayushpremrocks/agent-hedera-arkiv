@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 /** A unit of real work. `cpu` hashes in a loop for `seconds`; the result digest proves it ran. */
 export type Job = { kind: "cpu"; seconds: number; label: string };
 
-export const MAX_JOB_SECONDS = 25; // must fit inside one slot
+// Simulated runtime only. It may exceed a slot: the provider kills any job at the end of its slot.
+export const MAX_JOB_SECONDS = 120;
 
 /** Validate untrusted input into a Job, or throw. */
 export function parseJob(x: any): Job {

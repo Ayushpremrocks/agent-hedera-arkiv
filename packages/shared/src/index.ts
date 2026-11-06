@@ -5,3 +5,5 @@ export * from "./auth.js";
 export * from "./hcs.js";
 export * from "./http.js";
 export * from "./job.js";
+export * from "./swap.js";
+export * from "./x402.js";

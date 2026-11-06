@@ -15,12 +15,19 @@ while (Date.now() < end) {
 parentPort.postMessage({ digest: h.toString("hex"), iterations: n });
 `;
 
-/** Run a job to completion. The result digest + iteration count are the proof of work. */
-export function runJob(job: Job, seed: string): Promise<{ digest: string; iterations: number }> {
+/**
+ * Run a job, killing it after `limitMs` (the end of its slot). The worker is terminated, not asked
+ * to stop, so a job can never hold a worker past its slot whatever it does.
+ */
+export function runJob(job: Job, seed: string, limitMs: number): Promise<{ digest: string; iterations: number }> {
   return new Promise((resolve, reject) => {
     const w = new Worker(CPU_JOB, { eval: true, workerData: { seconds: job.seconds, seed } });
-    w.once("message", resolve);
-    w.once("error", reject);
-    w.once("exit", (code) => code !== 0 && reject(new Error(`worker exited ${code}`)));
+    const kill = setTimeout(() => {
+      reject(new Error(`timeout: killed at slot end after ${limitMs}ms`));
+      w.terminate();
+    }, limitMs);
+    w.once("message", (r) => (clearTimeout(kill), resolve(r)));
+    w.once("error", (e) => (clearTimeout(kill), reject(e)));
+    w.once("exit", (code) => (clearTimeout(kill), code !== 0 && reject(new Error(`worker exited ${code}`))));
   });
 }

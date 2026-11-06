@@ -33,7 +33,7 @@ const d = await offer(3, now + 30, now + 900, 99_999, 3600);
 const e = await offer(4, now + 45, now + 900, 800, 30);
 console.log("created", { b: b.entityKey, c: c.entityKey, d: d.entityKey, e: e.entityKey });
 
-const keys = async () => (await findOffers(reader, provider, myStart, 5_000n)).entities.map((r) => r.$key);
+const keys = async () => (await findOffers(reader, provider, { myStart, myLatest: myStart, notBefore: now, budget: 5_000n })).entities.map((r) => r.$key);
 const first = await keys();
 console.log("match now (expect B,E cheapest-first: E,B):", first);
 console.assert(first.length === 2 && first[0] === e.entityKey && first[1] === b.entityKey, "range query wrong");

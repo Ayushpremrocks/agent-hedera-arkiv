@@ -6,7 +6,7 @@ export type HcsEvent =
   | { type: "bound"; account: string; jobHash: string }
   | { type: "dispatch"; serial: number; start: number; owner: string; jobHash: string | null }
   | { type: "done"; serial: number; owner: string; jobHash: string; ok: boolean; result: string; ms: number }
-  | { type: "trade"; sellerSerial: number; buyerSerial: number; seller: string; buyer: string; price: string; paymentTx: string; swapTx: string }
+  | { type: "trade"; sellerSerial: number; buyerSerial: number; seller: string; buyer: string; price: string; swapTx: string }
   | { type: "refund"; buyer: string; amount: string; paymentTx: string; refundTx: string; reason: string };
 
 /**
