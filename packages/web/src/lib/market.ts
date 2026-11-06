@@ -7,7 +7,12 @@ import { keccak256, recoverAddress, toBytes } from "viem";
 const MIRROR = "https://testnet.mirrornode.hedera.com/api/v1";
 const reader = arkivReader(import.meta.env.VITE_ARKIV_ACCESS_KEY ?? "");
 
-export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number };
+import type { TrackRecord } from "@qy/shared/record";
+export type { TrackRecord };
+/** `record`: the provider's track record, computed by the host from its signed log (anyone can recompute it). */
+export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number; record?: TrackRecord | null };
+/** Promises kept, as a share of tickets started, or null before any started. */
+export const keptRate = (r?: TrackRecord | null) => (r && r.started ? r.kept / r.started : null);
 export type LogEvent = { seq: number; ts: number; by: string; provider: string; verified: boolean; e: any };
 export type Offer = { key: string; provider: string; serial: number; start: number; maxTokens: number; latestOk: number; price: bigint; seller: string; byOwner: boolean };
 export type TradeRow = { key: string; provider: string; sellerTicket: number; buyerTicket: number; price: bigint; swapTx: string };

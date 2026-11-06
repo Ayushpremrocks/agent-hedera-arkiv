@@ -3,10 +3,11 @@
 import { render } from "@arkiv-network/sdk/query";
 import { arkivReader, findOffers, offerFilter } from "@qy/shared/arkiv";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Notice, PageHeader, Section, Stats, Who } from "../components/ui";
 import { clock, hashscan, hbar, inHuman, shortClock } from "../lib/format";
-import { type LogEvent, type Provider, type QueueEntry, fetchLog, fetchOffers, fetchQueues, fetchTrades } from "../lib/market";
+import { type LogEvent, type Provider, type QueueEntry, fetchLog, fetchOffers, fetchQueues, fetchTrades, keptRate } from "../lib/market";
 
 const PAST = 120;
 const AHEAD = 240;
@@ -86,7 +87,15 @@ export function Market() {
 function Providers({ list }: { list: Provider[] }) {
   const t = useNow(5000);
   return (
-    <Section title="Providers" intro="Live offers on Arkiv. Each provider renews its offer every 30 seconds; one that goes offline drops out on its own.">
+    <Section
+      title="Providers"
+      intro={
+        <>
+          Live offers on Arkiv, renewed every 30 seconds; one that goes offline drops out on its own. Promises kept is computed from each provider's own signed log.{" "}
+          <Link to="/provide">Sell your GPU time</Link>.
+        </>
+      }
+    >
       <table>
         <thead>
           <tr>
@@ -94,6 +103,7 @@ function Providers({ list }: { list: Provider[] }) {
             <th>Model</th>
             <th className="num">Price now</th>
             <th>Guaranteed start</th>
+            <th>Promises kept</th>
             <th>Log</th>
           </tr>
         </thead>
@@ -101,13 +111,17 @@ function Providers({ list }: { list: Provider[] }) {
           {list.map((p) => (
             <tr key={p.id}>
               <td>
-                <b>{p.name}</b> <span className="muted">{p.id}</span>
+                <Link to={`/providers/${p.id}`} className="provider-link" viewTransition>
+                  {p.name}
+                </Link>{" "}
+                <span className="muted">{p.id}</span>
               </td>
               <td>{p.model}</td>
               <td className="num">{hbar(p.price)}</td>
               <td>
                 {shortClock(p.nextFree)} <span className="muted">{inHuman(p.nextFree - t)}</span>
               </td>
+              <td>{keptRate(p.record) === null ? <span className="muted">no record yet</span> : `${Math.round(keptRate(p.record)! * 100)}% of ${p.record!.started}`}</td>
               <td>
                 <a href={hashscan("topic", p.topicId)} target="_blank" rel="noopener">
                   {p.topicId}
@@ -117,8 +131,8 @@ function Providers({ list }: { list: Provider[] }) {
           ))}
           {!list.length && (
             <tr>
-              <td colSpan={5} className="muted">
-                No provider is online. Start one with <code>pnpm provider</code>.
+              <td colSpan={6} className="muted">
+                No provider is online. <Link to="/provide">Run one</Link>.
               </td>
             </tr>
           )}

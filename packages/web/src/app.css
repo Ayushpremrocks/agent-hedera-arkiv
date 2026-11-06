@@ -258,3 +258,6 @@ section table td { border-bottom: 1px solid var(--rule); }
   .pair-fields { grid-template-columns: 1fr; }
   .rules > div { grid-template-columns: 1fr; gap: 4px; }
 }
+.small { font-size: 0.8125rem; }
+.provider-link { font-weight: 700; text-decoration: none; }
+.provider-link:hover { text-decoration: underline; text-decoration-color: var(--now); text-underline-offset: 4px; }

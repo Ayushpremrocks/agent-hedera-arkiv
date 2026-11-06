@@ -7,3 +7,4 @@ export * from "./http.js";
 export * from "./job.js";
 export * from "./swap.js";
 export * from "./x402.js";
+export * from "./record.js";

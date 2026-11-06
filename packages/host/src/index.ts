@@ -8,7 +8,7 @@ import { AccountCreateTransaction, Hbar, PrivateKey } from "@hiero-ledger/sdk";
 import { createAgent, type Agent, type State, type TaskEvent } from "@qy/agent/agent";
 import { Hub } from "@qy/agent/hub";
 import { ROLES } from "@qy/agent/workloads";
-import { ENV_PATH, HttpError, arkivReader, evmKey, hederaClient, need, runLimit, serve } from "@qy/shared";
+import { ENV_PATH, HttpError, type LoggedEvent, arkivReader, evmKey, hederaClient, need, readEvents, runLimit, serve, trackRecord } from "@qy/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -42,6 +42,32 @@ const operator = hederaClient(need("HEDERA_OPERATOR_ID"), operatorKey);
 const hostWriter = writerFor(operatorKey); // the host's identity on Arkiv
 const names: Record<string, string> = {};
 const hub = new Hub(`${DATA_DIR}/hub.json`);
+
+// Each provider's signed log, read incrementally from the Mirror Node, for public track records.
+// shortcut: the newest 5,000 events per provider are kept in memory; a long-lived host would page older
+// history into Postgres.
+const logs = new Map<string, { events: LoggedEvent[]; lastSeq: number; at: number; pending?: Promise<void> }>();
+async function recordOf(providerId: string) {
+  const p = hub.known(providerId);
+  if (!p) throw new HttpError(404, "unknown provider");
+  let log = logs.get(p.topicId);
+  if (!log) logs.set(p.topicId, (log = { events: [], lastSeq: 0, at: 0 }));
+  if (Date.now() - log.at > 30_000) {
+    const l = log;
+    l.pending ??= (async () => {
+      for (let page = 0; page < 50; page++) {
+        const batch = await readEvents(p.topicId, l.lastSeq, 100);
+        if (!batch.length) break;
+        l.events.push(...batch);
+        l.lastSeq = batch.at(-1)!.seq;
+      }
+      l.events = l.events.slice(-5000);
+      l.at = Date.now();
+    })().finally(() => (l.pending = undefined));
+    await l.pending;
+  }
+  return trackRecord(log.events, p.id);
+}
 await hub.refreshProviders();
 const providerNames = () => {
   for (const p of hub.live.values()) names[p.id] = p.name;
@@ -268,7 +294,18 @@ await serve(PORT, {
   },
 
   // ---- the market, for the UI ----
-  "GET /api/market": async () => ({ body: { providers: [...hub.live.values()] } }),
+  "GET /api/market": async () => ({
+    body: { providers: await Promise.all([...hub.live.values()].map(async (p) => ({ ...p, record: await recordOf(p.id).catch(() => null) }))) },
+  }),
+
+  // ---- one provider, public: profile, track record from its signed log, recent events ----
+  "GET /api/providers/:id": async ({ params }) => {
+    const p = hub.known(params.id);
+    if (!p) throw new HttpError(404, "no provider with that account has been seen on Arkiv");
+    const record = await recordOf(p.id);
+    const recent = (logs.get(p.topicId)?.events ?? []).slice(-40).reverse();
+    return { body: { provider: p, online: hub.live.has(p.id), record, recent } };
+  },
 
   // ---- swaps from other agents (anywhere) into a hosted agent's slots ----
   "POST /agents/:id/offers/:provider/:serial/swap": async ({ params, body }) => {

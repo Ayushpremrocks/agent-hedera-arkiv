@@ -151,3 +151,30 @@
   .ql-top { padding: 14px 0; }
   .ql-nav { padding: 10px 8px; }
 }
+
+/* ---- sell GPU time ---- */
+.pv-terms, .pv-steps, .pv-board { padding: clamp(48px, 9vh, 110px) 0 0; }
+.pv-terms h2, .pv-steps h2, .pv-board h2 { font-size: clamp(2rem, 4vw, 3.2rem); line-height: 0.98; margin-bottom: 28px; }
+.pv-terms dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--rule-strong); }
+.pv-terms dl > div { padding: 22px 28px 26px 0; border-bottom: 1px solid var(--rule); }
+.pv-terms dl > div:nth-child(even) { padding-left: 28px; border-left: 1px solid var(--rule); }
+.pv-terms dt { font-weight: 800; font-stretch: 112%; font-size: 1.25rem; color: var(--now); margin-bottom: 8px; }
+.pv-terms dd { margin: 0; color: var(--ink-2); line-height: 1.55; max-width: 52ch; }
+.pv-steps ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.pv-steps li { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 24px; padding: 26px 0; border-bottom: 1px solid var(--rule); }
+.pv-steps h3 { font-size: 1.3rem; letter-spacing: -0.02em; margin-bottom: 6px; }
+.pv-steps p { margin: 0 0 12px; max-width: 70ch; }
+.cmd { display: flex; align-items: center; gap: 10px; max-width: 100%; padding: 10px 12px 10px 16px; border: 1px solid var(--rule-strong); border-radius: 10px; background: var(--card); }
+.cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 500; background: none; padding: 0; font-size: 0.875rem; color: var(--ink); }
+.pv-note { margin-top: 18px; font-size: 0.9375rem !important; }
+.pv-note code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 500; }
+.pv-board { padding-bottom: clamp(48px, 9vh, 110px); }
+.pv-board ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule-strong); }
+.pv-board li { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 2fr); gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+a.cta { text-decoration: none; }
+@media (max-width: 860px) {
+  .pv-terms dl { grid-template-columns: 1fr; }
+  .pv-terms dl > div:nth-child(even) { padding-left: 0; border-left: 0; }
+  .pv-steps li { grid-template-columns: 44px minmax(0, 1fr); }
+  .pv-board li { grid-template-columns: 1fr; gap: 2px; }
+}

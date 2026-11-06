@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts"
+    "start": "tsx src/index.ts",
+    "join": "tsx src/join.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "1.0.1",

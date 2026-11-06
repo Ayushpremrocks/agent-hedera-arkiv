@@ -197,6 +197,9 @@ export function Landing() {
           <Link to="/network" viewTransition className="ql-nav">
             Network status
           </Link>
+          <Link to="/provide" viewTransition className="ql-nav">
+            Sell GPU time
+          </Link>
           <button type="button" className="ql-nav ql-nav-btn" onClick={start}>
             Sign in
           </button>
@@ -252,6 +255,9 @@ export function Landing() {
           <nav aria-label="Footer">
             <Link to="/network" viewTransition>
               Network status
+            </Link>
+            <Link to="/provide" viewTransition>
+              Sell GPU time
             </Link>
             <button type="button" className="link-button" onClick={start}>
               Get started

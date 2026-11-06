@@ -1,12 +1,15 @@
 import { config } from "dotenv";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const ENV_PATH = fileURLToPath(new URL("../../../.env", import.meta.url));
+// The repo's .env by default. QY_ENV points at another file instead, so a community provider runs
+// from its own .env.provider (made by `pnpm provider:join`) and never needs anyone else's keys.
+export const ENV_PATH = process.env.QY_ENV ? resolve(process.env.QY_ENV) : fileURLToPath(new URL("../../../.env", import.meta.url));
 config({ path: ENV_PATH, quiet: true });
 
 export function need(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing ${name} in .env (see .env.example)`);
+  if (!v) throw new Error(`Missing ${name} in ${ENV_PATH} (see .env.example, or run pnpm provider:join)`);
   return v;
 }
 

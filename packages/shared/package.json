@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./arkiv": "./src/arkiv.ts"
+    "./arkiv": "./src/arkiv.ts",
+    "./record": "./src/record.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "1.0.1",

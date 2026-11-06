@@ -17,6 +17,8 @@ const Overview = page("Overview", () => import("./pages/Overview"));
 const Settings = page("Settings", () => import("./pages/Settings"));
 const TaskDetail = page("TaskDetail", () => import("./pages/TaskDetail"));
 const Tasks = page("Tasks", () => import("./pages/Tasks"));
+const ProviderPage = page("ProviderPage", () => import("./pages/ProviderPage"));
+const Provide = page("Provide", () => import("./pages/Provide"));
 import { Toaster } from "./components/motion";
 import { SessionProvider, useSession } from "./lib/session";
 import { Landing, NotFound } from "./pages/Landing";
@@ -36,8 +38,10 @@ createRoot(document.getElementById("root")!).render(
           <Suspense fallback={null}>
           <Routes>
             <Route index element={<Landing />} />
+            <Route path="provide" element={<Provide />} />
             <Route element={<AppShell />}>
               <Route path="network" element={<Market />} />
+              <Route path="providers/:id" element={<ProviderPage />} />
               <Route
                 path="app"
                 element={
