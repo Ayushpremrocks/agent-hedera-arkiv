@@ -20,6 +20,7 @@ export const ProviderProfile = defineSchema("qy_provider", {
   startup_ms: u64(), // fixed per-job startup
   max_tokens: u64(), // largest job that fits the provider's run-time cap
   escrow: str(), // account bookings are paid into; "" if the provider takes payment directly
+  bands: str(), // JSON [[maxTokens, tinybars], ...]: its prices by job size right now (demand included)
   booking_url: str(),
   model: str().indexed(),
   workers: u64(),

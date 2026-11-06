@@ -7,10 +7,11 @@ export const LLM_MODEL = process.env.LLM_MODEL ?? "qwen2.5:0.5b-instruct";
 const LLM_API_KEY = process.env.LLM_API_KEY;
 
 /**
- * Run one job on the model, cancelled after `limitMs` (its ticket's run-time limit). Cancelling closes the
- * request, which stops generation on the server, so a job can never hold a worker past its slot.
+ * Run one job on the model, streaming its output so the provider knows how far a running job has got
+ * (`onToken` is called with the count so far). Stopped only after `limitMs`, for a hung model server;
+ * the job's own token cap bounds normal runs. Cancelling closes the request, which stops generation.
  */
-export async function runJob(job: Job, limitMs: number): Promise<{ text: string; tokens: number }> {
+export async function runJob(job: Job, limitMs: number, onToken?: (generated: number) => void): Promise<{ text: string; tokens: number }> {
   try {
     const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
       method: "POST",
@@ -19,17 +20,40 @@ export async function runJob(job: Job, limitMs: number): Promise<{ text: string;
       body: JSON.stringify({
         model: LLM_MODEL,
         max_tokens: job.maxTokens,
+        stream: true,
+        stream_options: { include_usage: true },
         messages: [
           { role: "system", content: job.task },
           { role: "user", content: job.input },
         ],
       }),
     });
-    if (!res.ok) throw new Error(`model server answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const r = (await res.json()) as any;
-    return { text: String(r.choices?.[0]?.message?.content ?? ""), tokens: Number(r.usage?.completion_tokens ?? 0) };
+    if (!res.ok || !res.body) throw new Error(`model server answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    // Server-sent events: one "data: {json}" line per chunk, "data: [DONE]" at the end.
+    let text = "";
+    let chunks = 0;
+    let usage = 0;
+    let buf = "";
+    const decoder = new TextDecoder();
+    for await (const part of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buf += decoder.decode(part, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:") || line === "data: [DONE]") continue;
+        const msg = JSON.parse(line.slice(5));
+        const delta = msg.choices?.[0]?.delta?.content;
+        if (delta) {
+          text += delta;
+          onToken?.(++chunks); // one chunk is about one token
+        }
+        if (msg.usage?.completion_tokens) usage = Number(msg.usage.completion_tokens);
+      }
+    }
+    return { text, tokens: usage || chunks };
   } catch (e) {
-    if ((e as Error).name === "TimeoutError") throw new Error(`timeout: killed at the run-time limit after ${limitMs}ms`);
+    if ((e as Error).name === "TimeoutError") throw new Error(`timeout: hung, stopped after ${limitMs}ms`);
     throw e;
   }
 }

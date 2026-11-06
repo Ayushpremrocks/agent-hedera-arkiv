@@ -13,7 +13,10 @@ import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
 import { ExactHederaScheme } from "@x402/hedera/exact/server";
 import {
   CUTOFF_SECONDS,
+  type Bands,
   EventBatcher,
+  bandPrice,
+  HUNG_FACTOR,
   SWAP_VALID_SECONDS,
   HBAR,
   type HcsEvent,
@@ -52,10 +55,15 @@ const GRACE_SECONDS = 3; // a ticket starting later than startBy + this is refun
 // Tokenizing locks a ticket from starting this long, so a swap can't race the ticket starting.
 const TRADE_LOCK_SECONDS = SWAP_VALID_SECONDS + CUTOFF_SECONDS + 15;
 const RESERVE_HORIZON = Number(process.env.RESERVE_HORIZON_SECONDS ?? 3600); // how far ahead tickets are sold
-// The floor covers what serving one booking costs on Hedera (the payment, a share of a batched log
-// message and of an escrow payout), with margin. Nothing is minted per booking any more. Fees are set
-// in USD, so the floor is too (PRICE_FLOOR in tinybars overrides).
-const PRICE_FLOOR_CENTS = Number(process.env.PRICE_FLOOR_CENTS ?? 0.5);
+// This provider's own prices by job size, in US cents: "up to N tokens:cents", ascending. A booking
+// deposits the band its maximum size falls in; the escrow charges the band the job actually used. The
+// smallest band covers what serving any booking costs on Hedera (payment, a share of a batched log
+// message and of an escrow payout), with margin. Demand raises every band together.
+const PRICE_BANDS = (process.env.PRICE_BANDS ?? "256:0.5,1024:1,4096:2").split(",").map((b) => {
+  const [upTo, c] = b.split(":").map(Number);
+  if (!(upTo > 0 && c > 0)) throw new Error(`PRICE_BANDS entry "${b}" must look like tokens:cents`);
+  return [upTo, c] as const;
+}).sort((x, y) => x[0] - y[0]);
 // Turning a ticket into an NFT for a trade: a fresh mint plus transfer is about 2 US cents; reissuing a
 // returned NFT (rewrite its metadata, transfer it) about 0.2. Whoever trades pays it.
 const TOKENIZE_CENTS = Number(process.env.TOKENIZE_CENTS ?? 2);
@@ -86,13 +94,13 @@ async function cents(c: number): Promise<bigint> {
   return BigInt(Math.ceil(((c * r.hbar_equivalent) / r.cent_equivalent) * 1e8));
 }
 const prices = async () => ({
-  floor: process.env.PRICE_FLOOR ? BigInt(process.env.PRICE_FLOOR) : await cents(PRICE_FLOOR_CENTS),
+  bands: await Promise.all(PRICE_BANDS.map(async ([upTo, c]) => [upTo, await cents(c)] as const)),
   tokenize: await cents(TOKENIZE_CENTS),
   reissue: await cents(REISSUE_CENTS),
 });
 let PRICES = await prices();
 setInterval(() => prices().then((p) => (PRICES = p)).catch(() => {}), 3600_000).unref();
-console.log(`booking floor ${PRICES.floor} tinybars, tokenizing ${PRICES.tokenize} per ticket`);
+console.log(`prices by job size: ${PRICES.bands.map(([u, t]) => `up to ${u} tokens ${t}`).join(", ")} tinybars; tokenizing ${PRICES.tokenize}`);
 
 console.log(`model ${LLM_MODEL} at ${LLM_BASE_URL}: loading...`);
 console.log(`model ready in ${await warmUp()}ms`);
@@ -101,6 +109,19 @@ const SPEED: Speed = process.env.SPEED_TPS
   ? { tps: Number(process.env.SPEED_TPS), startupMs: Number(process.env.STARTUP_MS ?? 1000) }
   : await calibrate(WORKERS);
 SPEED.tps = Math.max(1, Math.floor(SPEED.tps));
+// Promises use the slowest speed seen in recent jobs, never above the calibrated worst case: a burst of
+// outside load lowers it, and it recovers once those slow samples are older than the window.
+const CALIBRATED_TPS = SPEED.tps;
+const SPEED_WINDOW_SECONDS = Number(process.env.SPEED_WINDOW_SECONDS ?? 600);
+const samples: { at: number; tps: number }[] = [];
+function observeSpeed(tps?: number) {
+  if (tps !== undefined && Number.isFinite(tps)) samples.push({ at: Date.now() / 1000, tps });
+  while (samples.length && samples[0].at < Date.now() / 1000 - SPEED_WINDOW_SECONDS) samples.shift();
+  const next = Math.max(1, Math.floor(Math.min(CALIBRATED_TPS, ...samples.map((s) => s.tps))));
+  if (next !== SPEED.tps) console.log(`worst-case speed ${SPEED.tps} -> ${next} tokens/s (${samples.length} recent samples)`);
+  SPEED.tps = next;
+}
+setInterval(() => observeSpeed(), 30_000).unref();
 console.log(`worst-case speed ${SPEED.tps} tokens/s + ${SPEED.startupMs}ms startup; largest job ${maxTokensWithin(MAX_RUN_SECONDS, SPEED)} tokens`);
 
 const facilitator = new HTTPFacilitatorClient({ url: need("X402_FACILITATOR_URL") });
@@ -118,16 +139,32 @@ let avgRunMs = 4000; // moving average of real run times, for pricing only
 
 const asPlanned = (n: number): Planned => ({ id: n, limit: tickets[n].limit, notBefore: tickets[n].notBefore, startBy: tickets[n].startBy });
 /** Latest moment each worker is free: a running job's kill time, or now. */
-const busyUntil = () => runningTickets().map((t) => Math.max(now(), Math.ceil(t.killAt ?? now() + t.limit)));
+// A job past its expected end isn't stopped. Its output streams in, so the time it still needs is its
+// remaining tokens at the current worst-case speed (all of them, until the first token arrives).
+const generated = new Map<Ticket, number>();
+const busyUntil = () =>
+  runningTickets().map((t) => {
+    const end = t.endBy ?? now() + t.limit;
+    if (end > now()) return Math.ceil(end);
+    return Math.ceil(now() + Math.max(1, t.maxTokens - (generated.get(t) ?? 0)) / SPEED.tps);
+  });
 const freeTimes = () => [...busyUntil(), ...Array(Math.max(0, WORKERS - runningTickets().length)).fill(now())];
 /** The promise a ticket sold now (or reserved for `notBefore`) would get: behind everything already sold. */
 const promiseNow = (limit: number, notBefore = now()) => promiseFor(freeTimes(), pending().map(asPlanned), limit, notBefore);
 
-/** Booking price: the floor, rising with how much work is already queued (capped at 16x). */
-function price(): bigint {
+/**
+ * This provider's prices by job size right now: its own bands, all raised together by demand (up to 16x
+ * when its queue is full). Bands past the largest job it can run are folded into one at that size.
+ */
+function currentBands(): Bands {
   const capacity = Math.max(1, WORKERS * Math.ceil((PRICE_WINDOW * 1000) / avgRunMs));
-  return bookingPrice(pending().length + runningTickets().length, capacity, PRICES.floor);
+  const surge = Number(bookingPrice(pending().length + runningTickets().length, capacity, 1_000_000n)) / 1_000_000;
+  const largest = maxTokensWithin(MAX_RUN_SECONDS, SPEED);
+  const fit = PRICES.bands.filter(([u]) => u < largest);
+  const top = PRICES.bands.find(([u]) => u >= largest) ?? PRICES.bands[PRICES.bands.length - 1];
+  return [...fit, [largest, top[1]] as const].map(([u, t]) => [u, BigInt(Math.round(Number(t) * surge)).toString()]);
 }
+const idleFloor = () => PRICES.bands[0][1]; // the smallest band with no demand: the least any booking costs
 
 // Ticket NFTs returned to the treasury (agents hand them back once their ticket has started), not yet
 // reissued. `claimed` stops two concurrent trades taking the same one.
@@ -161,7 +198,7 @@ function pump() {
     if (!next) return;
     const n = next.id;
     // The limit counts from here, not from when the model call starts (looking up the holder takes time).
-    Object.assign(tickets[n], { status: "running", startedAt: now(), killAt: Date.now() / 1000 + tickets[n].limit });
+    Object.assign(tickets[n], { status: "running", startedAt: now(), endBy: Date.now() / 1000 + tickets[n].limit });
     saveTickets();
     if (now() > tickets[n].startBy + GRACE_SECONDS) refundTicket(n, `ticket #${n} started after its startBy`);
     runTicket(n)
@@ -205,15 +242,12 @@ async function runTicket(n: number) {
 
   const t0 = Date.now();
   try {
-    const r = await runJob(p.job, Math.max(1, (t.killAt ?? Date.now() / 1000 + t.limit) * 1000 - Date.now()));
+    // Not stopped at its limit: only a hung model server (HUNG_FACTOR times the limit) is given up on.
+    const r = await runJob(p.job, Math.max(1, ((t.endBy ?? Date.now() / 1000 + t.limit) + t.limit * (HUNG_FACTOR - 1)) * 1000 - Date.now()), (k) => generated.set(t, k));
     const ms = Date.now() - t0;
     avgRunMs = Math.round(avgRunMs * 0.8 + ms * 0.2);
-    // shortcut: speed only ever goes down (never back up) once a job runs slower; restart to re-measure.
-    const seen = r.tokens >= 32 ? r.tokens / Math.max(0.001, (ms - SPEED.startupMs) / 1000) : Infinity;
-    if (seen < SPEED.tps) {
-      SPEED.tps = Math.max(1, Math.floor(seen));
-      console.log(`slower than promised: worst-case speed now ${SPEED.tps} tokens/s`);
-    }
+    if (ms > t.limit * 1000) console.log(`ticket #${n} overran its ${t.limit}s limit (${(ms / 1000).toFixed(1)}s); later tickets absorb it`);
+    observeSpeed(r.tokens >= 32 ? r.tokens / Math.max(0.001, (ms - SPEED.startupMs) / 1000) : undefined);
     saveResult(p.hash, { owner, text: r.text, tokens: r.tokens, model: LLM_MODEL, ms });
     log({ type: "done", ticket: n, owner, jobHash: p.hash, ok: true, result: "ok", resultHash: sha256(r.text), tokens: r.tokens, ms });
   } catch (e) {
@@ -221,9 +255,10 @@ async function runTicket(n: number) {
     log({ type: "done", ticket: n, owner, jobHash: p.hash, ok: false, result: reason.slice(0, 120), resultHash: null, tokens: 0, ms: Date.now() - t0 });
     // The job fit its ticket at the promised speed, so a timeout is the provider being slower than it
     // promised, like any other failure (model server down, a crash): pay the ticket back.
-    if (reason.startsWith("timeout")) SPEED.tps = Math.max(1, Math.floor(SPEED.tps * 0.8));
+    if (reason.startsWith("timeout")) observeSpeed(SPEED.tps / HUNG_FACTOR); // hung: be cautious for a while
     await refundTicket(n, `provider failed ticket #${n}: ${reason}`);
   } finally {
+    generated.delete(t);
     runningJobs.delete(p.hash);
   }
 }
@@ -326,16 +361,17 @@ await serve(PORT, {
     if (queued.some((q) => q.hash === hash) || runningJobs.has(hash) || loadResult(hash)) throw new HttpError(409, "this job is already booked");
     if (queued.length >= MAX_QUEUE) throw new HttpError(429, `at most ${MAX_QUEUE} queued jobs per account`);
 
-    const terms = () => ({ floor: PRICES.floor.toString(), startBy: promiseNow(limit), limit, maxTokens: job.maxTokens });
+    const terms = () => ({ floor: idleFloor().toString(), startBy: promiseNow(limit), limit, maxTokens: job.maxTokens, bands: currentBands() });
     if (!headers["payment-signature"]) {
-      const quote = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
+      const quote = await charge(headers, bandPrice(currentBands(), job.maxTokens), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
       if (quote.status === 402) return quote.res;
     }
     // Queue the job first so a parallel /book of the same job gets 409 and can't double-pay.
     enqueue(account, { job, hash });
     let paid;
+    const bands = currentBands(); // the prices this booking is settled against
     try {
-      paid = await charge(headers, price(), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
+      paid = await charge(headers, bandPrice(bands, job.maxTokens), account, `${BOOKING_URL}/book`, terms(), ESCROW || P.id);
     } catch (e) {
       dequeue(account, hash);
       throw e;
@@ -345,10 +381,10 @@ await serve(PORT, {
       return paid.res;
     }
     const n = issue(account, paid, job.maxTokens, limit, now());
-    log({ type: "booked", ticket: n, owner: account, jobHash: hash, price: paid.amount, startBy: tickets[n].startBy, maxTokens: job.maxTokens, paymentTx: paid.tx });
+    log({ type: "booked", ticket: n, owner: account, jobHash: hash, price: paid.amount, startBy: tickets[n].startBy, maxTokens: job.maxTokens, limit, paymentTx: paid.tx, bands });
     pump();
     return {
-      body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx },
+      body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx, bands },
       headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(paid.settled) },
     };
   },
@@ -368,14 +404,15 @@ await serve(PORT, {
     const limit = runLimit(maxTokens, SPEED);
     if (limit > MAX_RUN_SECONDS) throw new HttpError(400, `at most ${maxTokensWithin(MAX_RUN_SECONDS, SPEED)} tokens fit in one job here`);
     const account = await signed("reserve", `${maxTokens}@${notBefore}`, body);
-    const terms = () => ({ floor: PRICES.floor.toString(), startBy: promiseNow(limit, notBefore), limit, maxTokens, notBefore });
-    const paid = await charge(headers, price(), account, `${BOOKING_URL}/reserve`, terms(), ESCROW || P.id);
+    const bands = currentBands();
+    const terms = () => ({ floor: idleFloor().toString(), startBy: promiseNow(limit, notBefore), limit, maxTokens, notBefore, bands });
+    const paid = await charge(headers, bandPrice(bands, maxTokens), account, `${BOOKING_URL}/reserve`, terms(), ESCROW || P.id);
     if (paid.status === 402) return paid.res;
     const n = issue(account, paid, maxTokens, limit, notBefore);
-    log({ type: "booked", ticket: n, owner: account, jobHash: "", price: paid.amount, startBy: tickets[n].startBy, maxTokens, notBefore, paymentTx: paid.tx });
+    log({ type: "booked", ticket: n, owner: account, jobHash: "", price: paid.amount, startBy: tickets[n].startBy, maxTokens, limit, notBefore, paymentTx: paid.tx, bands });
     pump();
     return {
-      body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx },
+      body: { ...ticketView(n), tokenId, topicId, price: paid.amount, paymentTx: paid.tx, bands },
       headers: { "PAYMENT-RESPONSE": encodePaymentResponseHeader(paid.settled) },
     };
   },
@@ -517,7 +554,8 @@ const profile = () => ({
   booking_url: BOOKING_URL,
   model: LLM_MODEL,
   workers: u64(WORKERS),
-  price_now: u64(price()),
+  price_now: u64(BigInt(currentBands()[0][1])), // the smallest band now
+  bands: JSON.stringify(currentBands()),
   next_free: u64(promiseNow(0)),
 });
 // Start from a fresh entity: Arkiv refuses to move an expiry earlier, so an old long-lived profile

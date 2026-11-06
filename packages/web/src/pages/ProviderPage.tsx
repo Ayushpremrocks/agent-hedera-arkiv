@@ -90,8 +90,8 @@ export function ProviderPage() {
           </div>
           <dl className="facts">
             <div>
-              <dt>Price now</dt>
-              <dd>{hbar(p!.price)}</dd>
+              <dt>Prices now, by job size</dt>
+              <dd>{p!.bands?.length ? p!.bands.map(([upTo, t]) => `up to ${upTo.toLocaleString("en")} tokens ${hbar(t)}`).join(" · ") : hbar(p!.price)}</dd>
             </div>
             <div>
               <dt>A booking now starts by</dt>

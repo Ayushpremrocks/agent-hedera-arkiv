@@ -160,7 +160,7 @@ export function NewTask() {
               </p>
               <dl className="receipt">
                 <div>
-                  <dt>GPU time</dt>
+                  <dt>GPU time, at most</dt>
                   <dd>{hbar(qd.price)}</dd>
                 </div>
                 <div>

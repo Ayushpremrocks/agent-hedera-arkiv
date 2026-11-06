@@ -1,7 +1,7 @@
 // What happens to promises when something else uses the provider's GPU? Books real jobs through the
 // provider while a separate process loads the same model server directly (traffic the scheduler
 // can't see), then reads the outcome from the provider's signed log: did tickets start by their
-// promise, and did their jobs finish or get killed at their limit?
+// promise, and did their jobs finish (overruns are let finish; only a hung job is stopped)?
 //   FLOOD=0 node --import tsx spikes/contention-check.ts   (baseline: same jobs, no outside load)
 import { type Job, LATE_AFTER, type LoggedEvent, hbarPayer, jobHash, postPaid, readEvents, role, signRequest } from "@qy/shared";
 

@@ -32,6 +32,8 @@ type Detail = {
     createdAt: string;
   };
   provider: { topicId: string; tokenId: string; name: string } | null;
+  // How the escrow settled it: the deposit covered the job's maximum size; the provider kept the band it used.
+  settlement: { status: string; deposit: string; charged: string | null; returned: string | null; reason: string | null; tx: string | null } | null;
 };
 
 export function TaskDetail() {
@@ -52,7 +54,7 @@ export function TaskDetail() {
       </div>
     );
   if (q.isError) return <Notice text={q.error.message} kind="error" />;
-  const { task: t, provider: p } = q.data;
+  const { task: t, provider: p, settlement: st } = q.data;
   const created = Math.floor(new Date(t.createdAt).getTime() / 1000);
   const total = BigInt(t.price ?? 0) + BigInt(t.rushPaid ?? 0);
 
@@ -149,9 +151,27 @@ export function TaskDetail() {
                 </div>
               ) : null}
               <div>
-                <dt>GPU time</dt>
+                <dt>{st?.charged ? "Deposit" : "GPU time, deposit"}</dt>
                 <dd>{hbar(t.price)}</dd>
               </div>
+              {st?.charged !== null && st?.charged !== undefined && (
+                <>
+                  <div>
+                    <dt>Charged, by size used</dt>
+                    <dd>{hbar(st.charged)}</dd>
+                  </div>
+                  <div>
+                    <dt>Returned to you</dt>
+                    <dd title={st.reason ?? undefined}>{hbar(st.returned ?? "0")}</dd>
+                  </div>
+                </>
+              )}
+              {st?.status === "held" && (
+                <div>
+                  <dt>Escrow</dt>
+                  <dd>holding the deposit until it runs</dd>
+                </div>
+              )}
               <div>
                 <dt>Priority paid</dt>
                 <dd>{t.rushPaid ? hbar(t.rushPaid) : "none"}</dd>

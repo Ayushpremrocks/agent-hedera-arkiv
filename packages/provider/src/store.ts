@@ -59,7 +59,7 @@ export type Ticket = {
   startBy: number; // promised latest start, unix seconds; missed = refund
   notBefore: number; // a reservation doesn't start before this
   startedAt?: number;
-  killAt?: number; // unix seconds (fractional): the job is cut off here, so the worker is free by then
+  endBy?: number; // unix seconds (fractional): start + limit, when the job should end at worst-case speed
   refunded?: boolean; // paid back already (late, or the provider failed it)
 };
 const TICKETS_FILE = `${DATA_DIR}/tickets.json`;

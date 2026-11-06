@@ -303,7 +303,8 @@ await serve(PORT, {
     const account = session(headers);
     const t = (await db.select().from(tasks).where(and(eq(tasks.jobHash, params.jobHash), eq(tasks.owner, account))))[0];
     if (!t) throw new HttpError(404, "no such task");
-    return { body: { task: t, provider: hub.known(t.providerId ?? "") ?? null } };
+    const settlement = t.providerId && t.serial !== null ? escrow.entry(t.providerId, t.serial) : null;
+    return { body: { task: t, provider: hub.known(t.providerId ?? "") ?? null, settlement } };
   },
 
   // ---- estimate for the new-task form: what it costs and whether it starts in time on its own ----

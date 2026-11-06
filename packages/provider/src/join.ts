@@ -27,6 +27,7 @@ const { values: a } = parseArgs({
     port: { type: "string", default: "4000" },
     out: { type: "string", default: ".env.provider" },
     escrow: { type: "string" },
+    prices: { type: "string", default: "256:0.5,1024:1,4096:2" }, // your prices by job size: "up to N tokens:US cents", ...
     force: { type: "boolean", default: false },
   },
 });
@@ -37,6 +38,7 @@ const fail = (msg: string): never => {
 if (!a.account || !/^0\.0\.\d+$/.test(a.account)) fail("--account must be your Hedera testnet account id, like 0.0.1234 (portal.hedera.com gives you one).");
 if (!a.key) fail("--key must be that account's ECDSA private key (HashPack: Settings, Export private key).");
 if (a.escrow && !/^0\.0\.\d+$/.test(a.escrow)) fail("--escrow must be the escrow account id shown on the Sell GPU time page, like 0.0.5678.");
+if (!a.prices!.split(",").every((b) => /^\d+:\d+(\.\d+)?$/.test(b))) fail('--prices must look like "256:0.5,1024:1,4096:2" (up to N tokens:US cents).');
 if (!a.url) fail("--url must be where agents can reach this provider, e.g. http://192.168.1.20:4000 on a LAN or a public tunnel URL.");
 const out = resolve(a.out!);
 if (existsSync(out) && !a.force) fail(`${out} already exists. Use --force to replace it (its treasury account would be abandoned).`);
@@ -91,6 +93,8 @@ writeFileSync(
     `X402_FACILITATOR_URL=https://api.testnet.blocky402.com`,
     `# Bookings are paid into this escrow; it pays you once a ticket starts on time and refunds the buyer otherwise.`,
     `ESCROW_ID=${a.escrow ?? ""}`,
+    `# Your prices by job size, in US cents: up to N tokens:cents. Demand raises them all together.`,
+    `PRICE_BANDS=${a.prices}`,
     `# Optional, for a higher Arkiv rate limit: https://hub.arkiv.network/access-keys`,
     `ARKIV_ACCESS_KEY=`,
     "",

@@ -5,7 +5,7 @@ import { MIRROR, accountKey, parseKey } from "./hedera.js";
 export type HcsEvent =
   // jobHash is "" for a reservation: a ticket bought ahead, its job attached later.
   // paymentTx: the x402 payment; the escrow keeper checks it reached escrow before holding the price.
-  | { type: "booked"; ticket: number; owner: string; jobHash: string; price: string; startBy: number; maxTokens: number; notBefore?: number; paymentTx?: string }
+  | { type: "booked"; ticket: number; owner: string; jobHash: string; price: string; startBy: number; maxTokens: number; limit?: number; notBefore?: number; paymentTx?: string; bands?: [number, string][] }
   | { type: "dispatch"; ticket: number; owner: string; jobHash: string | null }
   | { type: "done"; ticket: number; owner: string; jobHash: string; ok: boolean; result: string; resultHash: string | null; tokens: number; ms: number }
   // A ticket turned into an NFT so it can be traded (minted only on demand).

@@ -20,7 +20,7 @@ const STEPS: { title: string; body: string; cmd?: string }[] = [
   {
     title: "Join with your own account",
     body: "Use a Hedera testnet account with an ECDSA key and about 15 HBAR. The command checks the key controls the account, creates a small treasury paid by you, and writes everything to .env.provider. Nobody else's keys are involved.",
-    cmd: "pnpm provider:join --account 0.0.YOUR_ID --key YOUR_ECDSA_KEY --url http://YOUR_HOST:4000 --name \"My GPU\" --escrow ESCROW",
+    cmd: "pnpm provider:join --account 0.0.YOUR_ID --key YOUR_ECDSA_KEY --url http://YOUR_HOST:4000 --name \"My GPU\" --prices 256:0.5,1024:1,4096:2 --escrow ESCROW",
   },
   {
     title: "Add a little Arkiv gas",
@@ -83,9 +83,10 @@ export function Provide() {
             <div>
               <dt>You're paid</dt>
               <dd>
-                In HBAR, through escrow: each booking is held until its ticket starts on time, then paid out to you in a batch. The
-                floor covers Hedera fees and rises with demand
-                {cheapest ? `; right now the cheapest provider charges ${hbar(cheapest.price)} a job` : ""}.
+                In HBAR, at prices you set by job size (for example: up to 256 tokens, up to 1,024, up to 4,096). Buyers deposit
+                the band their job could reach; once it runs, escrow pays you the band it actually used and returns the rest.
+                Demand raises your prices automatically
+                {cheapest ? `; right now the cheapest small job on the network costs ${hbar(cheapest.price)}` : ""}.
               </dd>
             </div>
             <div>

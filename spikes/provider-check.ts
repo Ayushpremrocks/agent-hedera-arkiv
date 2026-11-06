@@ -31,7 +31,7 @@ const run = now();
 const job = (label: string, task: string, input: string, maxTokens = 120): Job => ({ kind: "llm", task, input: `${input} (run ${run})`, maxTokens, deadline: now() + 600, label });
 
 const HOST = process.env.HOST_URL ?? "http://localhost:4100";
-const escrowStats = async () => (await (await fetch(`${HOST}/api/escrow`)).json()) as { account: string; released: number; partial: number; refunded: number };
+const escrowStats = async () => (await (await fetch(`${HOST}/api/escrow`)).json()) as { account: string; released: number; partial: number; refunded: number; refundedAmount: string };
 const e0 = await escrowStats();
 const q0 = await queue();
 const BIG = q0.maxTokens; // the largest job the provider accepts
@@ -42,6 +42,9 @@ const jobA = job("A triage", "Answer in two bullet points.", "A slot was sold fo
 const filler = (who: string, i: number) => job(`${who} filler ${i}`, "Write the integers from 1 to 5000 separated by commas, with nothing else.", `Start at 1. (${i})`, BIG);
 const waiting = job("A later", "Reply with one word.", "Say hello.", 10);
 const reserved = job("A reserved", "Reply with one word.", "Say goodbye.", 10);
+// Declared big (deposits the 1,024-token band) but answers in a few tokens: pay as you go should charge
+// only the smallest band and return the rest.
+const oversized = job("A oversized", "Reply with the single word OK.", "Go.", 1000);
 
 expect("job bigger than the provider's run-time cap rejected (400)", (await book(B, { ...jobB, maxTokens: BIG + 200 })).status === 400);
 expect("tampered signature rejected (401)", (await book(B, jobB, { tamper: true })).status === 401);
@@ -55,6 +58,9 @@ expect("idle price is the floor (covers Hedera fees)", BigInt(quote.body.price) 
 const b = await book(B, jobB, { pay: true });
 expect("B books (paid)", b.status === 200, b.status);
 const a = await book(A, jobA, { pay: true });
+const big = await book(A, oversized, { pay: true });
+const bands = (a.body.bands ?? []) as [number, string][];
+expect("a big job deposits its size band, not the smallest", big.status === 200 && bands.length > 1 && BigInt(big.body.price) > BigInt(bands[0][1]), `${big.body.price} vs smallest ${bands[0]?.[1]}`);
 expect("A books (paid)", a.status === 200, a.status);
 expect("booking the same job twice rejected before paying (409)", (await book(A, jobA, { pay: true })).status === 409);
 const { topicId, tokenId } = a.body;
@@ -137,7 +143,11 @@ for (let i = 0; i < 12 && e1.released - e0.released < 4; i++) {
   e1 = await escrowStats();
 }
 expect("the escrow paid the provider for tickets that started on time", e1.released - e0.released >= 4, `${e1.released - e0.released} paid out`);
-expect("the escrow credited and refunded nothing: no promise was missed", e1.refunded === e0.refunded && e1.partial === e0.partial, `${e1.partial - e0.partial} credited, ${e1.refunded - e0.refunded} refunded`);
+expect("no full refunds: no promise was broken", e1.refunded === e0.refunded, `${e1.refunded - e0.refunded} refunded`);
+// The oversized job used the smallest band, so part of its deposit came back: pay as you go.
+const back = BigInt(e1.refundedAmount) - BigInt(e0.refundedAmount);
+const expected = BigInt(big.body.price) - BigInt(bands[0][1]);
+expect("pay as you go: the unused part of the big job's deposit was returned", e1.partial - e0.partial >= 1 && back >= expected, `${back} tinybars returned (expected at least ${expected})`);
 
 // ---- NFT reuse: a returned ticket NFT is reissued (metadata rewrite) instead of minted ----
 if (serial > 0) {

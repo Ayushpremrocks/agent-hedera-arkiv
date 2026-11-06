@@ -10,7 +10,7 @@ const reader = arkivReader(import.meta.env.VITE_ARKIV_ACCESS_KEY ?? "");
 import type { TrackRecord } from "@qy/shared/record";
 export type { TrackRecord };
 /** `record`: the provider's track record, computed by the host from its signed log (anyone can recompute it). */
-export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number; escrow?: string; record?: TrackRecord | null };
+export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number; escrow?: string; bands?: [number, string][]; record?: TrackRecord | null };
 /** Promises kept, as a share of tickets started, or null before any started. */
 export const keptRate = (r?: TrackRecord | null) => (r && r.started ? r.kept / r.started : null);
 export type LogEvent = { seq: number; ts: number; by: string; provider: string; verified: boolean; e: any };

@@ -173,7 +173,7 @@ function ticketsOf(providers: Provider[], queues: Record<string, QueueEntry[]>, 
 function statusOf(events: LogEvent[], p: Provider, s: Slot) {
   const done = events.find((x) => x.by === p.id && x.e.type === "done" && x.e.ticket === s.serial);
   const dispatch = events.find((x) => x.by === p.id && x.e.type === "dispatch" && x.e.ticket === s.serial);
-  if (done) return done.e.ok ? { kind: "ran", text: `ran ${(done.e.ms / 1000).toFixed(1)}s`, owner: done.e.owner } : { kind: "killed", text: String(done.e.result).startsWith("timeout") ? "killed at end" : "failed", owner: done.e.owner };
+  if (done) return done.e.ok ? { kind: "ran", text: `ran ${(done.e.ms / 1000).toFixed(1)}s`, owner: done.e.owner } : { kind: "killed", text: String(done.e.result).startsWith("timeout") ? "hung, stopped" : "failed", owner: done.e.owner };
   if (dispatch) return dispatch.e.jobHash ? { kind: "running", text: "running", owner: dispatch.e.owner } : { kind: "idle", text: "no job", owner: dispatch.e.owner };
   if (s.start > now()) return { kind: "waiting", text: "starts by", owner: s.owner };
   return { kind: "idle", text: "not run", owner: s.owner };

@@ -8,7 +8,7 @@ import { type LoggedEvent, MIRROR, accountEvm, arkivReader, findProviders, readE
 // nextFree: the startBy a ticket booked now is promised. tps/startupMs: worst-case speed, so a job's
 // run limit is runLimit(maxTokens, provider). maxTokens: the largest job the provider accepts.
 // escrow: the account its bookings are paid into ("" if the provider takes payment directly).
-export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number; escrow: string };
+export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number; escrow: string; bands: [number, string][] };
 type Listener = (provider: string, ev: LoggedEvent) => void;
 const isAccount = (s: unknown): s is string => typeof s === "string" && /^0\.0\.\d+$/.test(s);
 
@@ -63,6 +63,13 @@ export class Hub {
         startupMs: Number(r.startup_ms?.value ?? 1000),
         maxTokens: Number(r.max_tokens?.value ?? 0),
         escrow: r.escrow?.value ?? "",
+        bands: (() => {
+          try {
+            return JSON.parse(r.bands?.value || "[]");
+          } catch {
+            return [];
+          }
+        })(),
         model: r.model.value,
         price: r.price_now.value.toString(),
         nextFree: Number(r.next_free.value),
