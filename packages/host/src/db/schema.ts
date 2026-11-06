@@ -44,6 +44,7 @@ export const tasks = pgTable(
     serial: integer("serial"),
     start: bigint("start", { mode: "number" }),
     price: text("price"), // what the booking cost, tinybars
+    rushPaid: text("rush_paid"), // paid to another agent to move this task ahead, tinybars
     status: text("status").notNull().default("queued"), // queued | running | done | failed
     onTime: boolean("on_time"),
     result: text("result"), // the model's answer (private)

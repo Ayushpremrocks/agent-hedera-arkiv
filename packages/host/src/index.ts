@@ -88,7 +88,7 @@ function taskHook(agentId: string, owner: string, key: string) {
       );
       return;
     }
-    if (e.kind === "moved") await db.update(tasks).set({ serial: e.serial, start: e.start, ...touch }).where(eq(tasks.jobHash, e.jobHash));
+    if (e.kind === "moved") await db.update(tasks).set({ serial: e.serial, start: e.start, rushPaid: e.paid, ...touch }).where(eq(tasks.jobHash, e.jobHash));
     if (e.kind === "running") await db.update(tasks).set({ status: "running", serial: e.serial, ...touch }).where(eq(tasks.jobHash, e.jobHash));
     if (e.kind === "done")
       await db
@@ -237,6 +237,8 @@ await serve(PORT, {
         onTime: tasks.onTime,
         finishedAt: tasks.finishedAt,
         failure: tasks.failure,
+        price: tasks.price,
+        rushPaid: tasks.rushPaid,
         preview: sql<string | null>`left(${tasks.result}, 240)`,
         createdAt: tasks.createdAt,
       })
@@ -251,6 +253,16 @@ await serve(PORT, {
     const t = (await db.select().from(tasks).where(and(eq(tasks.jobHash, params.jobHash), eq(tasks.owner, account))))[0];
     if (!t) throw new HttpError(404, "no such task");
     return { body: { task: t, provider: hub.known(t.providerId ?? "") ?? null } };
+  },
+
+  // ---- estimate for the new-task form: what it costs and whether it starts in time on its own ----
+  "GET /api/quote": async ({ headers }) => {
+    session(headers);
+    const providers = [...hub.live.values()].sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)));
+    if (!providers.length) throw new HttpError(503, "no provider is online right now");
+    const cheapest = providers[0];
+    const soonest = [...providers].sort((a, b) => a.nextFree - b.nextFree)[0];
+    return { body: { price: cheapest.price, soonestStart: soonest.nextFree, slotSeconds: soonest.slot, providers: providers.length, at: now() } };
   },
 
   // ---- the market, for the UI ----

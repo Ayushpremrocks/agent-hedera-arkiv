@@ -65,7 +65,7 @@ export type AgentOptions = {
 export type Store = { load(): Promise<State | null>; save(s: State): void };
 export type TaskEvent =
   | { kind: "booked"; jobHash: string; label: string; deadline: number; provider: string; providerName: string; serial: number; start: number; price: string; fromUser: boolean }
-  | { kind: "moved"; jobHash: string; serial: number; start: number } // swapped into an earlier slot
+  | { kind: "moved"; jobHash: string; serial: number; start: number; paid: string } // bought an earlier slot for `paid` tinybars
   | { kind: "running"; jobHash: string; serial: number }
   | { kind: "done"; jobHash: string; serial: number; result: string; resultHash: string; tokens: number; model: string; finishedAt: number; onTime: boolean }
   | { kind: "failed"; jobHash: string; reason: string };
@@ -380,7 +380,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
           const urgent = Object.entries(state.jobs)
             .filter(([, j]) => j.provider === provider && j.status === "queued")
             .sort(([, a], [, b]) => a.deadline - b.deadline)[0];
-          if (urgent) emit({ kind: "moved", jobHash: urgent[0], serial: sellerSerial, start });
+          if (urgent) emit({ kind: "moved", jobHash: urgent[0], serial: sellerSerial, start, paid: price });
           say(`BOUGHT ${p.name} #${sellerSerial} (starts in ${start - now()}s) from ${names[row.seller.value] ?? row.seller.value} for ${price} tinybars, gave #${give.serial}: ${hashscan("transaction", swapTx)}`);
           bought = true;
           break;

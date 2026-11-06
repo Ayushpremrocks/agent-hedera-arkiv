@@ -54,6 +54,12 @@ export function Market() {
 
   return (
     <>
+      <div className="page-header">
+        <div>
+          <h1>Network status</h1>
+          <p>The open market behind QueueYield, read live from Hedera and Arkiv: providers, scheduled GPU time, priority trades and every signed event.</p>
+        </div>
+      </div>
       <Notice text={error?.message} kind="error" />
       <Stats
         items={[
