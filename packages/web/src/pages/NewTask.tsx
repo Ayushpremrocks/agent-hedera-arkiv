@@ -58,10 +58,11 @@ export function NewTask() {
     book.mutate();
   };
 
-  // Estimate: the booking price now, plus whatever Rush may add; whether the soonest slot is in time.
+  // The booking price now, plus whatever Rush may add; whether the guaranteed start plus the job's
+  // run limit meets the deadline (a worst case, so "in time" here is a promise, not a guess).
   const qd = quote.data;
-  const startsIn = qd ? qd.soonestStart - qd.at : null;
-  const inTime = qd ? qd.soonestStart + qd.slotSeconds <= qd.at + Number(f.within) : null;
+  const startsIn = qd ? qd.startBy - qd.at : null;
+  const inTime = qd ? qd.startBy + qd.runSeconds <= qd.at + Number(f.within) : null;
   const noBudget = me.data?.agent?.allowance === "0";
 
   return (
@@ -153,14 +154,14 @@ export function NewTask() {
                   </>
                 )}
                 <dt>Starts</dt>
-                <dd>{startsIn !== null && startsIn > 0 ? inHuman(startsIn) : "now"}</dd>
+                <dd>{startsIn !== null && startsIn > 0 ? `within ${inHuman(startsIn)}, guaranteed` : "now"}</dd>
               </dl>
               {inTime ? (
-                <p className="ok-text">At today's queue length it finishes in time.</p>
+                <p className="ok-text">Guaranteed to finish in time: the provider starts it by then or refunds you.</p>
               ) : f.priority === "rush" ? (
                 <p>The queue is too long for this deadline; your agent will buy an earlier place from someone who can wait.</p>
               ) : (
-                <p className="warn">At today's queue length it would finish late. Choose Rush to let your agent buy an earlier place.</p>
+                <p className="warn">The guaranteed start is too late for this deadline. Choose Rush to let your agent buy an earlier place.</p>
               )}
               <small className="muted">From {qd.providers} provider{qd.providers === 1 ? "" : "s"} online. Prices follow demand.</small>
             </>

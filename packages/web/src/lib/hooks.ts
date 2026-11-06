@@ -19,7 +19,8 @@ export type TaskRow = {
   preview: string | null;
   createdAt: string;
 };
-export type Quote = { price: string; soonestStart: number; slotSeconds: number; providers: number; at: number };
+// startBy: the start providers guarantee now (or refund); runSeconds: the job's hard run limit.
+export type Quote = { price: string; startBy: number; runSeconds: number; providers: number; at: number };
 
 export function useMe() {
   const { account, api } = useSession();

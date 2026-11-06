@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { type LoggedEvent, MIRROR, accountEvm, arkivReader, findProviders, readEvents } from "@qy/shared";
 
-export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number };
+// nextFree: the startBy a ticket booked now is promised. tps/startupMs: worst-case speed, so a job's
+// run limit is runLimit(maxTokens, provider). maxTokens: the largest job the provider accepts.
+export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number };
 type Listener = (provider: string, ev: LoggedEvent) => void;
 const isAccount = (s: unknown): s is string => typeof s === "string" && /^0\.0\.\d+$/.test(s);
 
@@ -55,7 +57,10 @@ export class Hub {
         tokenId: r.token_id.value,
         topicId: r.topic_id.value,
         bookingUrl: r.booking_url.value,
-        slot: Number(r.run_seconds.value), // typical run time: how long one queued ticket takes
+        slot: Number(r.run_seconds.value), // average run time, informational
+        tps: Number(r.tps?.value ?? 1),
+        startupMs: Number(r.startup_ms?.value ?? 1000),
+        maxTokens: Number(r.max_tokens?.value ?? 0),
         model: r.model.value,
         price: r.price_now.value.toString(),
         nextFree: Number(r.next_free.value),

@@ -15,20 +15,25 @@ export const ProviderProfile = defineSchema("qy_provider", {
   name: str(),
   token_id: str(),
   topic_id: str(),
-  run_seconds: u64(), // typical job run time, for estimating when a queued ticket starts
+  run_seconds: u64(), // average job run time (informational; promises use the worst case below)
+  tps: u64(), // worst-case generation speed, tokens/s with every worker busy
+  startup_ms: u64(), // fixed per-job startup
+  max_tokens: u64(), // largest job that fits the provider's run-time cap
   booking_url: str(),
   model: str().indexed(),
   workers: u64(),
   price_now: u64().indexed(), // current booking price, tinybars
-  next_free: u64().indexed(), // estimated start of a ticket booked now, unix seconds
+  next_free: u64().indexed(), // guaranteed start (startBy) of a ticket booked now, unix seconds
 });
 
-// An agent offering its place in a provider's queue. `eta` is the provider's estimate of when that
-// ticket starts; the buyer gives back its own (later) ticket plus the price.
+// An agent offering its place in a provider's queue. `start_by` is the provider's promise for that
+// ticket (start by then or refund); `max_tokens` its size. The buyer gives back its own (later)
+// ticket plus the price.
 export const SlotOffer = defineSchema("qy_offer", {
   provider: str().indexed(),
   ticket: u64().indexed(),
-  eta: u64().indexed(),
+  start_by: u64().indexed(),
+  max_tokens: u64().indexed(),
   latest_ok_start: u64().indexed(), // latest start the seller can take in exchange and still meet its deadlines
   min_price: u64().indexed(),
   seller: str(), // seller's Hedera account id
@@ -55,7 +60,7 @@ export function arkivWriter(evmKey: `0x${string}`) {
 }
 
 /** What a buyer holding a slot at `myStart` is looking for. All times are unix seconds. */
-export type Want = { myStart: number; myLatest: number; notBefore: number; budget: bigint };
+export type Want = { myStart: number; myLatest: number; notBefore: number; budget: bigint; minTokens?: number };
 
 /**
  * Offers the buyer can take: the slot is earlier than the buyer's own and meets the buyer's deadline
@@ -65,8 +70,9 @@ export type Want = { myStart: number; myLatest: number; notBefore: number; budge
 export function offerFilter(provider: string, w: Want) {
   return and(
     eq("provider", provider),
-    lte("eta", u64(Math.min(w.myStart - 1, w.myLatest))),
-    gte("eta", u64(w.notBefore)),
+    lte("start_by", u64(Math.min(w.myStart - 1, w.myLatest))),
+    gte("start_by", u64(w.notBefore)),
+    gte("max_tokens", u64(w.minTokens ?? 0)), // big enough for the buyer's job
     gte("latest_ok_start", u64(w.myStart)),
     lte("min_price", u64(w.budget)),
   );

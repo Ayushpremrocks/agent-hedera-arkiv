@@ -68,7 +68,7 @@ export function TaskDetail() {
     ...(t.rushPaid ? [{ text: `Moved ahead in the queue: paid another agent ${hbar(t.rushPaid)} to finish on time`, state: "done" as const }] : []),
     {
       when: t.start ?? undefined,
-      text: t.status === "queued" ? `Scheduled to start at ${t.start ? clock(t.start) : "its turn in the queue"}` : "Ran on the provider's GPU",
+      text: t.status === "queued" ? `Guaranteed to start by ${t.start ? clock(t.start) : "its turn in the queue"} (or refunded)` : "Ran on the provider's GPU",
       state: t.status === "queued" ? "now" : "done",
     },
     t.status === "failed"

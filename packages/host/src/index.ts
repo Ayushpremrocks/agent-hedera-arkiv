@@ -8,7 +8,7 @@ import { AccountCreateTransaction, Hbar, PrivateKey } from "@hiero-ledger/sdk";
 import { createAgent, type Agent, type State, type TaskEvent } from "@qy/agent/agent";
 import { Hub } from "@qy/agent/hub";
 import { ROLES } from "@qy/agent/workloads";
-import { ENV_PATH, HttpError, arkivReader, evmKey, hederaClient, need, serve } from "@qy/shared";
+import { ENV_PATH, HttpError, arkivReader, evmKey, hederaClient, need, runLimit, serve } from "@qy/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -258,11 +258,13 @@ await serve(PORT, {
   // ---- estimate for the new-task form: what it costs and whether it starts in time on its own ----
   "GET /api/quote": async ({ headers }) => {
     session(headers);
-    const providers = [...hub.live.values()].sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)));
+    const TOKENS = 300; // the agent's default task size
+    const providers = [...hub.live.values()].filter((p) => p.maxTokens >= TOKENS).sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)));
     if (!providers.length) throw new HttpError(503, "no provider is online right now");
     const cheapest = providers[0];
-    const soonest = [...providers].sort((a, b) => a.nextFree - b.nextFree)[0];
-    return { body: { price: cheapest.price, soonestStart: soonest.nextFree, slotSeconds: soonest.slot, providers: providers.length, at: now() } };
+    // Guaranteed numbers, not estimates: the start each provider promises now, and the job's hard run limit.
+    const soonest = [...providers].sort((a, b) => a.nextFree + runLimit(TOKENS, a) - (b.nextFree + runLimit(TOKENS, b)))[0];
+    return { body: { price: cheapest.price, startBy: soonest.nextFree, runSeconds: runLimit(TOKENS, soonest), providers: providers.length, at: now() } };
   },
 
   // ---- the market, for the UI ----

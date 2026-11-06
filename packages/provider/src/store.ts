@@ -39,9 +39,9 @@ export function clearQueue(account: string) {
   return n;
 }
 
-/** Earliest deadline first: a ticket the owner just bought goes to its most urgent job. */
-export function nextJob(account: string): Queued | undefined {
-  return [...(queues.get(account) ?? [])].sort((a, b) => a.job.deadline - b.job.deadline)[0];
+/** Earliest deadline first among the jobs that fit the ticket's size. */
+export function nextJob(account: string, maxTokens: number): Queued | undefined {
+  return [...(queues.get(account) ?? [])].filter((q) => q.job.maxTokens <= maxTokens).sort((a, b) => a.job.deadline - b.job.deadline)[0];
 }
 
 /**
@@ -54,6 +54,13 @@ export type Ticket = {
   paymentTx: string;
   status: "queued" | "running" | "done";
   serial?: number; // the ticket's NFT, if it has been tokenized for a trade
+  maxTokens: number; // its size: the largest job it runs
+  limit: number; // hard run-time limit, seconds (from maxTokens at worst-case speed)
+  startBy: number; // promised latest start, unix seconds; missed = refund
+  notBefore: number; // a reservation doesn't start before this
+  startedAt?: number;
+  killAt?: number; // unix seconds (fractional): the job is cut off here, so the worker is free by then
+  refunded?: boolean; // paid back already (late, or the provider failed it)
 };
 const TICKETS_FILE = `${DATA_DIR}/tickets.json`;
 const saved = existsSync(TICKETS_FILE) ? JSON.parse(readFileSync(TICKETS_FILE, "utf8")) : { next: 1, tickets: {} };

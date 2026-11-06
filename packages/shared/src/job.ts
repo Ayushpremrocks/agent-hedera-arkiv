@@ -28,3 +28,16 @@ export function jobHash(job: Job): string {
 }
 
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+
+/** How fast a provider generates at worst: tokens/s with every worker busy, plus per-job startup. */
+export type Speed = { tps: number; startupMs: number };
+
+/** A ticket's hard run-time limit in whole seconds: startup plus its tokens at worst-case speed, with margin. */
+export function runLimit(maxTokens: number, speed: Speed, margin = 1.25): number {
+  return Math.ceil((speed.startupMs / 1000 + maxTokens / speed.tps) * margin);
+}
+
+/** The most tokens whose run limit fits in `seconds`. */
+export function maxTokensWithin(seconds: number, speed: Speed, margin = 1.25): number {
+  return Math.max(0, Math.floor((seconds / margin - speed.startupMs / 1000) * speed.tps));
+}

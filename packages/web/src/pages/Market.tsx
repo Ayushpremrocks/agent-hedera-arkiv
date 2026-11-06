@@ -71,7 +71,7 @@ export function Market() {
         ]}
       />
       <Providers list={list} />
-      <Section title="Queues" intro="Each block is one queue ticket on a provider's GPU, colored by who holds it: recent runs on the left, estimated starts on the right. Arcs join tickets that swapped places.">
+      <Section title="Queues" intro="Each block is one queue ticket on a provider's GPU, colored by who holds it: recent runs on the left; on the right, the latest each waiting ticket can start and run (promised, or refunded). Arcs join tickets that swapped places.">
         <Schedule providers={list} slots={slots} events={verified} names={names} />
       </Section>
       <div className="pair">
@@ -96,7 +96,7 @@ function Providers({ list }: { list: Provider[] }) {
             <th>Provider</th>
             <th>Model</th>
             <th className="num">Price now</th>
-            <th>Next start</th>
+            <th>Guaranteed start</th>
             <th>Log</th>
           </tr>
         </thead>
@@ -131,8 +131,9 @@ function Providers({ list }: { list: Provider[] }) {
   );
 }
 
-// `serial` here is the queue ticket number; `start` is when it ran, or the provider's estimate.
-type Slot = { provider: string; serial: number; start: number; owner: string };
+// `serial` is the queue ticket number. `start`/`len`: when it ran and for how long, or for a waiting
+// ticket its promised startBy and hard run limit (the latest it can occupy a worker).
+type Slot = { provider: string; serial: number; start: number; len: number; owner: string; size?: number };
 
 /** Tickets to draw: recent runs from the signed log, plus what's waiting in each queue now. Holders come from the log too. */
 function ticketsOf(providers: Provider[], queues: Record<string, QueueEntry[]>, events: LogEvent[]): Slot[] {
@@ -147,12 +148,12 @@ function ticketsOf(providers: Provider[], queues: Record<string, QueueEntry[]>, 
     const seen = new Set<number>();
     for (const q of queues[p.id] ?? []) {
       seen.add(q.ticket);
-      out.push({ provider: p.id, serial: q.ticket, start: q.eta, owner: holder.get(q.ticket) ?? "?" });
+      out.push({ provider: p.id, serial: q.ticket, start: q.startedAt ?? q.startBy, len: q.limit, size: q.maxTokens, owner: holder.get(q.ticket) ?? "?" });
     }
     for (const x of mine)
       if (x.by === p.id && x.e.type === "done" && !seen.has(x.e.ticket)) {
         seen.add(x.e.ticket);
-        out.push({ provider: p.id, serial: x.e.ticket, start: x.ts - x.e.ms / 1000, owner: x.e.owner });
+        out.push({ provider: p.id, serial: x.e.ticket, start: x.ts - x.e.ms / 1000, len: Math.max(1, x.e.ms / 1000), owner: x.e.owner });
       }
   }
   return out;
@@ -163,7 +164,7 @@ function statusOf(events: LogEvent[], p: Provider, s: Slot) {
   const dispatch = events.find((x) => x.by === p.id && x.e.type === "dispatch" && x.e.ticket === s.serial);
   if (done) return done.e.ok ? { kind: "ran", text: `ran ${(done.e.ms / 1000).toFixed(1)}s`, owner: done.e.owner } : { kind: "killed", text: String(done.e.result).startsWith("timeout") ? "killed at end" : "failed", owner: done.e.owner };
   if (dispatch) return dispatch.e.jobHash ? { kind: "running", text: "running", owner: dispatch.e.owner } : { kind: "idle", text: "no job", owner: dispatch.e.owner };
-  if (s.start > now()) return { kind: "waiting", text: "waiting", owner: s.owner };
+  if (s.start > now()) return { kind: "waiting", text: "starts by", owner: s.owner };
   return { kind: "idle", text: "not run", owner: s.owner };
 }
 
@@ -177,12 +178,12 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
   // One band of lanes per provider; tickets that overlap in time go to separate lanes (one per worker, roughly).
   let y = TOP;
   const bands = providers.map((p) => {
-    const visible = slots.filter((s) => s.provider === p.id && s.start + p.slot > t0 && s.start < t1).sort((a, b) => a.start - b.start || a.serial - b.serial);
+    const visible = slots.filter((s) => s.provider === p.id && s.start + s.len > t0 && s.start < t1).sort((a, b) => a.start - b.start || a.serial - b.serial);
     const ends: number[] = [];
     const placed = visible.map((s) => {
       let lane = ends.findIndex((end) => end <= s.start);
       if (lane < 0) lane = ends.push(0) - 1;
-      ends[lane] = s.start + p.slot;
+      ends[lane] = s.start + s.len;
       return { s, lane };
     });
     const lanes = Math.max(1, ends.length);
@@ -221,7 +222,7 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
                 const start = s.start;
                 const st = statusOf(events, p, s);
                 const bx = Math.max(G, x(start) + 1);
-                const bw = Math.min(x(start + p.slot) - 1, W - 8) - bx;
+                const bw = Math.min(x(start + s.len) - 1, W - 8) - bx;
                 if (bw <= 2) return null;
                 const sy = by + i * LANE;
                 pos.set(`${p.id}:${s.serial}`, { cx: bx + bw / 2, y: sy });
@@ -287,7 +288,7 @@ function Offers({ offers, providers, names }: { offers: Awaited<ReturnType<typeo
           <thead>
             <tr>
               <th>Ticket</th>
-              <th>Starts (est.)</th>
+              <th>Starts by</th>
               <th>Seller</th>
               <th className="num">Asks</th>
               <th>Check</th>
@@ -297,7 +298,7 @@ function Offers({ offers, providers, names }: { offers: Awaited<ReturnType<typeo
             {live.map((o) => (
               <tr key={o.key}>
                 <td>
-                  {pname(o.provider)} #{o.serial}
+                  {pname(o.provider)} #{o.serial} <span className="muted">{o.maxTokens} tokens</span>
                 </td>
                 <td>
                   {clock(o.start)} <span className="muted">{inHuman(o.start - t)}</span>
@@ -327,7 +328,7 @@ function BuyerQuery({ providers, slots, names }: { providers: Provider[]; slots:
   const [result, setResult] = useState<string | null>(null);
   const chosen = upcoming.find((s) => `${s.provider}:${s.serial}` === pick) ?? upcoming[0];
   const provider = providers.find((p) => p.id === chosen?.provider);
-  const want = chosen && provider ? { myStart: chosen.start, myLatest: Math.floor(t) + Number(within) - provider.slot, notBefore: Math.floor(t) + NOT_BEFORE_SECONDS, budget: BigInt(Math.round(Number(budget) * 1e8)) } : null;
+  const want = chosen && provider ? { myStart: chosen.start, myLatest: Math.floor(t) + Number(within) - chosen.len, minTokens: chosen.size, notBefore: Math.floor(t) + NOT_BEFORE_SECONDS, budget: BigInt(Math.round(Number(budget) * 1e8)) } : null;
 
   const run = async (e: FormEvent) => {
     e.preventDefault();

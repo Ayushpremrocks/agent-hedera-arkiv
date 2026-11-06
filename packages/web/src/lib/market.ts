@@ -7,11 +7,12 @@ import { keccak256, recoverAddress, toBytes } from "viem";
 const MIRROR = "https://testnet.mirrornode.hedera.com/api/v1";
 const reader = arkivReader(import.meta.env.VITE_ARKIV_ACCESS_KEY ?? "");
 
-export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number };
+export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number; tps: number; startupMs: number; maxTokens: number };
 export type LogEvent = { seq: number; ts: number; by: string; provider: string; verified: boolean; e: any };
-export type Offer = { key: string; provider: string; serial: number; start: number; latestOk: number; price: bigint; seller: string; byOwner: boolean };
+export type Offer = { key: string; provider: string; serial: number; start: number; maxTokens: number; latestOk: number; price: bigint; seller: string; byOwner: boolean };
 export type TradeRow = { key: string; provider: string; sellerTicket: number; buyerTicket: number; price: bigint; swapTx: string };
-export type QueueEntry = { ticket: number; status: "queued" | "running"; eta: number; serial: number | null };
+// startBy: promised latest start; limit: hard run limit (seconds); notBefore: a reservation's start, or a trade lock.
+export type QueueEntry = { ticket: number; status: "queued" | "running"; startBy: number; startedAt: number | null; limit: number; maxTokens: number; notBefore: number; serial: number | null };
 
 const isAccount = (s: unknown): s is string => typeof s === "string" && /^0\.0\.\d+$/.test(s);
 async function mirror<T = any>(path: string): Promise<T> {
@@ -87,7 +88,7 @@ export async function fetchQueues(providers: Provider[]): Promise<Record<string,
 }
 
 export async function fetchOffers(): Promise<Offer[]> {
-  const { entities } = await reader.select().from(SlotOffer).orderBy(asc("eta")).limit(100).fetch();
+  const { entities } = await reader.select().from(SlotOffer).orderBy(asc("start_by")).limit(100).fetch();
   return Promise.all(
     entities.map(async (r) => {
       const seller = r.seller.value;
@@ -95,7 +96,8 @@ export async function fetchOffers(): Promise<Offer[]> {
         key: r.$key,
         provider: r.provider.value,
         serial: Number(r.ticket.value),
-        start: Number(r.eta.value),
+        start: Number(r.start_by.value),
+        maxTokens: Number(r.max_tokens.value),
         latestOk: Number(r.latest_ok_start.value),
         price: r.min_price.value,
         seller,

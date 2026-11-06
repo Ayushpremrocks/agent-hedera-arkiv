@@ -1,6 +1,6 @@
 // End-to-end check against a running provider with the model up: auth failures, paid booking
-// (x402) into a queue with no mint, demand pricing, tokenizing a ticket on demand, real model jobs,
-// the run-time kill, private results and the batched signed log.
+// (x402) into a queue with no mint, the startBy promise and ticket sizes, a reservation with its job
+// attached later, tokenizing with a trade lock, real model jobs, private results and the batched log.
 import { type Job, type LoggedEvent, hbarPayer, hederaClient, jobHash, postPaid, readEvents, role, sha256, signRequest, slotInfo } from "@qy/shared";
 
 const URL = process.env.PROVIDER_URL ?? "http://localhost:4000";
@@ -8,15 +8,21 @@ const A = role("AGENT_A");
 const B = role("AGENT_B");
 const C = role("AGENT_C");
 const now = () => Math.floor(Date.now() / 1000);
+type Who = { id: string; key: string };
+const pay = (who: Who) => hbarPayer(who.id, who.key, 1_000_000_000n);
 
-async function book(who: { id: string; key: string }, job: Job, opts: { tamper?: boolean; pay?: boolean } = {}) {
+async function book(who: Who, job: Job, opts: { tamper?: boolean; pay?: boolean } = {}) {
   const signed = signRequest("book", who.id, who.key, jobHash(job));
   if (opts.tamper) signed.sig = signed.sig.replace(/^../, "00");
-  return postPaid(`${URL}/book`, { job, ...signed }, opts.pay ? hbarPayer(who.id, who.key, 1_000_000_000n) : undefined);
+  return postPaid(`${URL}/book`, { job, ...signed }, opts.pay ? pay(who) : undefined);
 }
-const tokenize = (who: { id: string; key: string }, tickets: number[], pay = false) =>
-  postPaid(`${URL}/tickets/tokenize`, { tickets, ...signRequest("tokenize", who.id, who.key, tickets.join(",")) }, pay ? hbarPayer(who.id, who.key, 1_000_000_000n) : undefined);
-const result = (who: { id: string; key: string }, hash: string) => postPaid(`${URL}/results`, { jobHash: hash, ...signRequest("result", who.id, who.key, hash) });
+const reserve = (who: Who, maxTokens: number, notBefore: number, paid = true) =>
+  postPaid(`${URL}/reserve`, { maxTokens, notBefore, ...signRequest("reserve", who.id, who.key, `${maxTokens}@${notBefore}`) }, paid ? pay(who) : undefined);
+const attach = (who: Who, job: Job) => postPaid(`${URL}/jobs`, { job, ...signRequest("job", who.id, who.key, jobHash(job)) });
+const tokenize = (who: Who, tickets: number[], paid = false) =>
+  postPaid(`${URL}/tickets/tokenize`, { tickets, ...signRequest("tokenize", who.id, who.key, tickets.join(",")) }, paid ? pay(who) : undefined);
+const result = (who: Who, hash: string) => postPaid(`${URL}/results`, { jobHash: hash, ...signRequest("result", who.id, who.key, hash) });
+const queue = async () => (await (await fetch(`${URL}/queue`)).json()) as { maxTokens: number; speed: { tps: number }; graceSeconds: number; tickets: any[] };
 function expect(label: string, ok: boolean, got: unknown = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label} ${got}`);
   if (!ok) process.exitCode = 1;
@@ -24,20 +30,22 @@ function expect(label: string, ok: boolean, got: unknown = "") {
 const run = now();
 const job = (label: string, task: string, input: string, maxTokens = 120): Job => ({ kind: "llm", task, input: `${input} (run ${run})`, maxTokens, deadline: now() + 600, label });
 
+const q0 = await queue();
+const BIG = q0.maxTokens; // the largest job the provider accepts
+console.log(`provider: worst case ${q0.speed.tps} tokens/s, largest job ${BIG} tokens`);
 const jobB = job("B summary", "Summarise in one sentence.", "Agent B booked a GPU slot on QueueYield and listed it for sale on Arkiv.");
 const jobA = job("A triage", "Answer in two bullet points.", "A slot was sold for 0.02 HBAR. Is the market getting tighter?");
-// Reliably long: thousands of tokens, past the provider's 30s run-time limit.
-const overrun = job("C overrun", "Write the integers from 1 to 3000 separated by commas, with nothing else.", "Start now.", 4096);
-const overrun2 = job("B overrun", "Write the integers from 3000 down to 1 separated by commas, with nothing else.", "Start now.", 4096);
-const overrun3 = job("C overrun 2", "Write a very long story, at least 3000 words, about a GPU that never sleeps.", "Begin.", 4096);
+// Long jobs to keep the workers busy, each as big as the provider allows.
+const filler = (who: string, i: number) => job(`${who} filler ${i}`, "Write the integers from 1 to 5000 separated by commas, with nothing else.", `Start at 1. (${i})`, BIG);
 const waiting = job("A later", "Reply with one word.", "Say hello.", 10);
+const reserved = job("A reserved", "Reply with one word.", "Say goodbye.", 10);
 
-expect("bad job rejected (400)", (await book(B, { ...jobB, maxTokens: 999_999 })).status === 400);
+expect("job bigger than the provider's run-time cap rejected (400)", (await book(B, { ...jobB, maxTokens: BIG + 200 })).status === 400);
 expect("tampered signature rejected (401)", (await book(B, jobB, { tamper: true })).status === 401);
 expect("signing as someone else rejected (401)", (await book({ id: B.id, key: A.key }, jobB)).status === 401);
 
 const quote = await book(B, jobB);
-expect("unpaid booking gets 402", quote.status === 402, quote.status);
+expect("unpaid booking gets 402 with the startBy it would promise", quote.status === 402 && quote.body.startBy >= now() - 1, `startBy +${quote.body.startBy - now()}s`);
 const FLOOR = BigInt(quote.body.floor);
 expect("idle price is the floor (covers Hedera fees)", BigInt(quote.body.price) === FLOOR, `${quote.body.price} tinybars`);
 
@@ -46,28 +54,34 @@ expect("B books (paid)", b.status === 200, b.status);
 const a = await book(A, jobA, { pay: true });
 expect("A books (paid)", a.status === 200, a.status);
 expect("booking the same job twice rejected before paying (409)", (await book(A, jobA, { pay: true })).status === 409);
-const c = await book(C, overrun, { pay: true });
-expect("C books its overrunning job", c.status === 200, c.status);
 const { topicId, tokenId } = a.body;
-expect("a booking is a queue ticket with an estimated start, no NFT", Number.isInteger(c.body.ticket) && c.body.eta >= now() - 1 && c.body.serial === undefined, `ticket #${c.body.ticket}, eta +${c.body.eta - now()}s`);
-// Two 30s jobs fill both workers, so the next booking really waits in the queue.
-expect("B books a second overrunning job", (await book(B, overrun2, { pay: true })).status === 200);
-expect("C books a third, in case one stops early", (await book(C, overrun3, { pay: true })).status === 200);
+expect("a booking is a sized ticket with a promised startBy, no NFT", Number.isInteger(a.body.ticket) && a.body.startBy >= now() - 2 && a.body.maxTokens === 120 && a.body.limit > 0 && a.body.serial === null, `ticket #${a.body.ticket}, startBy +${a.body.startBy - now()}s, limit ${a.body.limit}s`);
+
+// Fill both workers (and one more) so the next booking really waits.
+// Booked in parallel (each payment takes seconds), and each counts until its token cap.
+const filled = await Promise.all(([[C, 1], [B, 2], [C, 3], [B, 4]] as const).map(([who, i]) => book(who, filler(who === B ? "B" : "C", i), { pay: true })));
+expect("four fillers booked", filled.every((f) => f.status === 200), filled.map((f) => f.status).join(","));
 const later = await book(A, waiting);
-expect("price rose with both workers busy", BigInt(later.body.price) > FLOOR, later.body.price);
+expect("price rose with the workers busy", BigInt(later.body.price) > FLOOR, later.body.price);
 const w = await book(A, waiting, { pay: true });
-expect("A's next ticket is booked behind them", w.status === 200, `position ${w.body.position}, eta +${w.body.eta - now()}s`);
-const queue = (await (await fetch(`${URL}/queue`)).json()) as { tickets: { ticket: number; status: string }[] };
-expect("/queue shows it waiting", queue.tickets.some((t) => t.ticket === w.body.ticket && t.status === "queued"));
+expect("A's next ticket is promised a start behind the fillers", w.status === 200 && w.body.startBy > now() + 5, `startBy +${w.body.startBy - now()}s`);
+expect("/queue shows it waiting with its promise", (await queue()).tickets.some((t) => t.ticket === w.body.ticket && t.status === "queued" && t.startBy === w.body.startBy));
 expect("results aren't there before the job runs (404)", (await result(A, jobHash(waiting))).status === 404);
 
-// Tokenizing: only the holder, paid, minted to the holder, once.
+// A reservation: capacity bought ahead, its job attached later.
+const at = now() + 45;
+expect("a reservation in the past is refused (400)", (await reserve(A, 20, now() - 10, false)).status === 400);
+const r = await reserve(A, 20, at);
+expect("A reserves a ticket for later", r.status === 200 && r.body.notBefore === at && r.body.startBy >= at, `ticket #${r.body.ticket}, startBy +${r.body.startBy - now()}s`);
+expect("A attaches a job to it (free)", (await attach(A, reserved)).status === 200);
+
+// Tokenizing: only the holder, paid, minted to the holder, once, and locks the ticket for the trade.
 expect("someone else can't tokenize A's ticket (403)", (await tokenize(B, [w.body.ticket], true)).status === 403);
 const tq = await tokenize(A, [w.body.ticket]);
 expect("tokenizing is paid (402)", tq.status === 402, tq.status);
 const tok = await tokenize(A, [w.body.ticket], true);
 const serial = Number(tok.body.serials?.[w.body.ticket]);
-expect("A tokenizes its waiting ticket", tok.status === 200 && serial > 0, tok.status === 200 ? `NFT #${serial}` : `${tok.status} ${tok.body.error}`);
+expect("A tokenizes its waiting ticket, locked for the trade", tok.status === 200 && serial > 0 && tok.body.lockedUntil > now() + 20, tok.status === 200 ? `NFT #${serial}, locked ${tok.body.lockedUntil - now()}s` : `${tok.status} ${tok.body.error}`);
 if (serial > 0) {
   const nft = await slotInfo(hederaClient(A.id, A.key), tokenId, serial);
   expect("the NFT is A's and names the ticket", nft.owner === A.id && nft.meta.t === w.body.ticket, JSON.stringify(nft));
@@ -75,12 +89,12 @@ if (serial > 0) {
   expect("tokenizing again is free and returns the same NFT", again.status === 200 && again.body.price === "0" && Number(again.body.serials[w.body.ticket]) === serial);
 }
 
-
-// Wait for all three to finish and their batched events to reach the Mirror Node.
+// Wait for everything to run and the batched events to reach the Mirror Node.
 const startSeq = Math.max(0, Number((await (await fetch(`https://testnet.mirrornode.hedera.com/api/v1/topics/${topicId}/messages?order=desc&limit=1`)).json()).messages[0]?.sequence_number ?? 0) - 40);
 let events: LoggedEvent[] = [];
-const done = (hash: string) => events.find((x) => x.e.type === "done" && x.e.jobHash === hash)?.e as Extract<LoggedEvent["e"], { type: "done" }> | undefined;
-for (let i = 0; i < 40 && ![jobA, jobB, overrun, waiting].every((j) => done(jobHash(j))); i++) {
+const ofType = <T extends LoggedEvent["e"]["type"]>(type: T) => events.filter((x) => x.e.type === type) as (LoggedEvent & { e: Extract<LoggedEvent["e"], { type: T }> })[];
+const done = (hash: string) => ofType("done").find((x) => x.e.jobHash === hash)?.e;
+for (let i = 0; i < 60 && ![jobA, jobB, waiting, reserved].every((j) => done(jobHash(j))); i++) {
   await new Promise((r) => setTimeout(r, 5000));
   events = [];
   for (let seq = startSeq, batch; (batch = await readEvents(topicId, seq, 100)).length; seq = batch.at(-1)!.seq) events.push(...batch);
@@ -98,7 +112,15 @@ expect("B can't read A's result (403)", (await result(B, jobHash(jobA))).status 
 const forged = { jobHash: jobHash(jobA), ...signRequest("result", A.id, B.key, jobHash(jobA)) };
 expect("forged result request rejected (401)", (await postPaid(`${URL}/results`, forged)).status === 401);
 expect("B's job ran", !!done(jobHash(jobB))?.ok);
-const dC = done(jobHash(overrun));
-expect("C's overrunning job was cut off at the run-time limit", !!dC && !dC.ok && dC.result.startsWith("timeout"), dC?.result);
 const dW = done(jobHash(waiting));
 expect("the tokenized ticket still ran A's job", !!dW?.ok && dW.owner === A.id, dW ? `${dW.tokens} tokens` : "no done event");
+
+// Every promise kept: each ticket booked in this run was dispatched by its startBy (+ grace).
+const promised = new Map(ofType("booked").map((x) => [x.e.ticket, x.e.startBy]));
+const dispatched = ofType("dispatch").filter((x) => promised.has(x.e.ticket));
+const lateOnes = dispatched.filter((x) => x.ts > promised.get(x.e.ticket)! + q0.graceSeconds + 3); // consensus lags the dispatch by a few seconds
+expect("every ticket started by its promised startBy", dispatched.length >= 6 && !lateOnes.length, `${dispatched.length} dispatched, late: ${lateOnes.map((x) => `#${x.e.ticket} +${x.ts - promised.get(x.e.ticket)!}s`).join(", ") || "none"}`);
+const rd = dispatched.find((x) => x.e.ticket === r.body.ticket);
+// A holder's jobs run on whichever of its tickets fits, most urgent first: either of A's small jobs.
+expect("the reservation ran one of A's jobs, not before it was due", !!rd && [jobHash(reserved), jobHash(waiting)].includes(rd.e.jobHash ?? "") && rd.ts >= at, rd ? `started ${rd.ts - at}s after notBefore` : "not dispatched");
+expect("no refunds: the provider kept its word", !ofType("refund").some((x) => promised.has(x.e.ticket ?? -1)), ofType("refund").map((x) => x.e.reason).join("; "));

@@ -19,6 +19,11 @@ export type Role = {
   /** Least it asks for a slot it can spare. */
   minAsk: bigint;
   make: (m: Market, trigger?: LoggedEvent) => Task;
+  /**
+   * Reserve capacity ahead: after each routine job, buy a ticket of this many tokens for the next one
+   * at today's price. The next job uses it; if another agent needs it sooner, it's sold at a profit.
+   */
+  reserveAhead?: number;
   /** Events that should start a job right away (urgent roles only). */
   trigger?: (e: LoggedEvent, me: string) => boolean;
 };
@@ -84,6 +89,7 @@ export const ROLES: Record<string, Role> = {
     deadlineIn: 600,
     lateCost: 5_000_000n,
     minAsk: 5_000_000n, // 0.05 HBAR: cheap to move, the deadline is far off
+    reserveAhead: 350,
     make: (m) => ({
       label: "market digest",
       maxTokens: 350,

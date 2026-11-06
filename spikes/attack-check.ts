@@ -48,7 +48,7 @@ const job: Job = { kind: "llm", task: "Reply with one word.", input: "attack che
 const booked = await postPaid(`${bookingUrl}/book`, { job, ...signRequest("book", X.id, X.key, jobHash(job)) }, hbarPayer(X.id, X.key, 1_000_000_000n));
 if (booked.status !== 200) throw new Error(`attacker could not book: ${booked.status} ${booked.body.error}`);
 const myTicket: number = booked.body.ticket;
-const myStart: number = booked.body.eta;
+const myStart: number = booked.body.startBy;
 console.log(`attacker ${X.id} holds ticket #${myTicket} starting in ~${myStart - now()}s`);
 
 // Wait for a live offer from a fleet seller that would accept this slot.
@@ -104,7 +104,7 @@ expect("swapping without paying is refused (400)", free.status === 400, `${free.
 // An offer written by the attacker in the seller's name: buyers must not trust it.
 const fake = await arkivWriter(evmKey(X.key)).createEntity(
   SlotOffer,
-  { provider: providerId, ticket: u64(sellerTicket), eta: offer.eta, latest_ok_start: u64(now() + 3600), min_price: u64(1n), seller, endpoint: "http://localhost:9/evil", job_hash: "" },
+  { provider: providerId, ticket: u64(sellerTicket), start_by: offer.start_by, max_tokens: offer.max_tokens, latest_ok_start: u64(now() + 3600), min_price: u64(1n), seller, endpoint: "http://localhost:9/evil", job_hash: "" },
   { expiration: ExpirationTime.fromSeconds(120) },
 );
 const forged = (await reader.select().from(SlotOffer).where(eq("provider", providerId)).fetch()).entities.find((r) => r.$key === fake.entityKey);

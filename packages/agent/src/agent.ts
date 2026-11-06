@@ -32,6 +32,7 @@ import {
   parseKey,
   postEvent,
   postPaid,
+  runLimit,
   sha256,
   signRequest,
   slotInfo,
@@ -90,18 +91,23 @@ type JobState = {
   met?: boolean;
   file?: string; // delivered result, relative to the agent's dir
   createdAt?: number;
+  maxTokens?: number; // the job's size: it needs a ticket at least this big
 };
 type Listing = { key: `0x${string}`; latestOk: number; price: string };
 export type State = {
-  v: 4;
-  slots: Record<string, number>; // "provider:ticket" -> estimated start, queue tickets held that haven't run
+  v: 5;
+  slots: Record<string, number>; // "provider:ticket" -> its promised startBy, for tickets held that haven't run
+  sizes: Record<string, number>; // "provider:ticket" -> its size (max tokens)
   jobs: Record<string, JobState>; // jobHash -> state
   listings: Record<string, Listing>; // "provider:ticket" -> live Arkiv offer
-  stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string; refunded?: string };
+  stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string; refunded?: string; reserved?: number };
 };
 export type TaskSpec = { task: string; input?: string; label: string; deadline: number; maxTokens?: number; maxPay: bigint; minComp: bigint };
 
 const now = () => Math.floor(Date.now() / 1000);
+// Delivery is judged by the consensus time of the provider's `done` message, which lands after the job
+// ends: up to one batch interval (4s) plus consensus. Plans finish this much before the deadline.
+const LOG_SLACK = 10;
 const NOT_BEFORE = CUTOFF_SECONDS + SWAP_VALID_SECONDS; // a swap signed now must settle before the cutoff
 const isAccount = (s: unknown): s is string => typeof s === "string" && /^0\.0\.\d+$/.test(s);
 const slotKey = (provider: string, serial: number) => `${provider}:${serial}`;
@@ -128,7 +134,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   if (opts.dir) mkdirSync(`${opts.dir}/outputs`, { recursive: true });
   const loaded = opts.fresh ? null : await opts.store.load();
   const state: State =
-    loaded?.v === 4 ? loaded : { v: 4, slots: {}, jobs: {}, listings: {}, stats: { booked: 0, met: 0, late: 0, failed: 0, bought: 0, sold: 0, spent: "0", earned: "0" } };
+    loaded?.v === 5 ? loaded : { v: 5, slots: {}, sizes: {}, jobs: {}, listings: {}, stats: { booked: 0, met: 0, late: 0, failed: 0, bought: 0, sold: 0, spent: "0", earned: "0" } };
   const save = () => opts.store.save(state);
   const emit = (e: TaskEvent) => {
     try {
@@ -147,48 +153,40 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     }
   }
 
-  /** One provider's queued tickets (with estimated starts) and pending deadlines: the inputs to every decision there. */
+  /** A job's hard run-time limit at a provider: what the provider kills it at, so the worst case. */
+  const runFor = (p: Provider, maxTokens: number) => runLimit(maxTokens, p);
+
+  /**
+   * One provider's held tickets (at their promised startBy) and pending deadlines: the inputs to every
+   * decision there. `run` is the longest run any waiting job there may take (the worst case for each),
+   * `need` the biggest job size, so any ticket swapped in must be at least that big.
+   */
   function schedule(provider: string) {
+    const p = known(provider);
     const slots = Object.entries(state.slots)
-      .map(([key, start]) => ({ ...splitKey(key), start }))
+      .map(([key, start]) => ({ ...splitKey(key), start, size: state.sizes[key] ?? 0 }))
       .filter((s) => s.provider === provider);
-    const deadlines = Object.values(state.jobs)
-      .filter((j) => j.provider === provider && j.status === "queued")
-      .map((j) => j.deadline);
-    return { slots, starts: slots.map((s) => s.start), deadlines };
+    const waiting = Object.values(state.jobs).filter((j) => j.provider === provider && j.status === "queued");
+    const need = Math.max(0, ...waiting.map((j) => j.maxTokens ?? 300));
+    const run = runFor(p, need || 256);
+    return { slots, starts: slots.map((s) => s.start), deadlines: waiting.map((j) => j.deadline - LOG_SLACK), run, need };
   }
   const queuedAt = (provider: string) => Object.values(state.jobs).filter((j) => j.provider === provider && j.status === "queued");
   const open = () => Object.values(state.jobs).filter((j) => j.status === "queued" || j.status === "running");
   const activeProviders = () => new Set([...Object.keys(state.slots).map((k) => splitKey(k).provider), ...open().map((j) => j.provider)]);
   for (const id of activeProviders()) if (hub.known(id)) hub.track(hub.known(id)!);
 
-  type QueueEntry = { ticket: number; status: string; eta: number; serial: number | null };
-  /** A provider's queue as it stands: estimated starts, and which tickets are NFTs (tradeable). */
+  type QueueEntry = { ticket: number; status: string; startBy: number; notBefore: number; maxTokens: number; serial: number | null };
+  /** A provider's queue as it stands: promises, sizes, trade locks, and which tickets are NFTs. */
   async function queueOf(p: Provider): Promise<Map<number, QueueEntry>> {
     const res = await fetch(`${p.bookingUrl}/queue`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`${p.name} queue: ${res.status}`);
     const body = (await res.json()) as { tickets: QueueEntry[] };
     return new Map(body.tickets.map((t) => [t.ticket, t]));
   }
-  /** Estimated starts move as the queue drains: refresh the ones this agent holds. */
-  async function refreshEtas() {
-    for (const provider of activeProviders()) {
-      const p = hub.known(provider);
-      if (!p) continue;
-      const q = await queueOf(p).catch(() => null);
-      if (!q) continue;
-      for (const key of Object.keys(state.slots)) {
-        const { provider: pid, serial: ticket } = splitKey(key);
-        const entry = q.get(ticket);
-        if (pid === provider && entry?.status === "queued") state.slots[key] = entry.eta;
-      }
-    }
-    save();
-  }
-
   /** Budget for buying an earlier slot: the most any at-risk job's owner will pay to be on time. */
-  function buyBudget(provider: string, starts: number[], deadlines: number[]) {
-    const risky = new Set(atRisk(starts, deadlines, known(provider).slot));
+  function buyBudget(provider: string, starts: number[], deadlines: number[], run: number) {
+    const risky = new Set(atRisk(starts, deadlines, run));
     return queuedAt(provider)
       .filter((j) => risky.has(j.deadline))
       .reduce((m, j) => (BigInt(j.lateCost ?? cfg.lateCost) > m ? BigInt(j.lateCost ?? cfg.lateCost) : m), 0n);
@@ -231,6 +229,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       }
     } else if (e.type === "dispatch") {
       delete state.slots[slotKey(provider, e.ticket)];
+      delete state.sizes[slotKey(provider, e.ticket)];
       const job = e.jobHash ? state.jobs[e.jobHash] : undefined;
       if (job) {
         Object.assign(job, { status: "running", serial: e.ticket });
@@ -287,7 +286,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const rows = (await reader.select().from(SlotOffer).limit(100).fetch()).entities;
     const offers = rows.map((r) => ({
       serial: Number(r.ticket.value),
-      start: Number(r.eta.value),
+      start: Number(r.start_by.value),
       latestOk: Number(r.latest_ok_start.value),
       price: r.min_price.value,
       seller: r.seller.value,
@@ -295,11 +294,11 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     return { me: me.id, names, events: hub.history, offers: offers.filter((x) => x.start > now()) };
   }
 
-  /** Providers in order of preference: cheapest that can still meet the deadline, then soonest free. */
-  function rankProviders(deadline: number): Provider[] {
-    const affordable = [...hub.live.values()].filter((p) => BigInt(p.price) <= maxBooking);
+  /** Providers in order of preference: cheapest whose promise meets the deadline, then soonest free. */
+  function rankProviders(deadline: number, tokens: number): Provider[] {
+    const affordable = [...hub.live.values()].filter((p) => BigInt(p.price) <= maxBooking && p.maxTokens >= tokens);
     const byPrice = (a: Provider, b: Provider) => Number(BigInt(a.price) - BigInt(b.price));
-    const inTime = affordable.filter((p) => p.nextFree + p.slot <= deadline).sort(byPrice);
+    const inTime = affordable.filter((p) => p.nextFree + runFor(p, tokens) + LOG_SLACK <= deadline).sort(byPrice);
     const late = affordable.filter((p) => !inTime.includes(p)).sort((a, b) => a.nextFree - b.nextFree || byPrice(a, b));
     return [...inTime, ...late];
   }
@@ -311,34 +310,36 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const deadline = terms.deadline ?? now() + cfg.deadlineIn;
     const job: Job = { kind: "llm", task: t.task, input: t.input.slice(-MAX_INPUT_CHARS), maxTokens: t.maxTokens, deadline, label: t.label };
     const hash = jobHash(job);
+    if (await useReservation(job, hash, terms)) return state.jobs[hash] && booking(hash);
     const request = { job, ...signRequest("book", me.id, me.key, hash) };
     // Arkiv profiles are up to a refresh old, so ask the top candidates for a live quote (an unpaid
-    // /book answers 402 with today's price and next free start) and book the best, like Golem's
-    // negotiation step. A provider that doesn't answer has gone offline before its offer expired.
+    // /book answers 402 with today's price and the startBy it would promise) and book the best, like
+    // Golem's negotiation step. A provider that doesn't answer has gone offline before its offer expired.
     const quoted = (
       await Promise.all(
-        rankProviders(deadline)
+        rankProviders(deadline, job.maxTokens)
           .slice(0, 3)
           .map(async (c) => {
             const q = await postPaid(`${c.bookingUrl}/book`, request, undefined, 0, 5000).catch(() => null);
-            return q?.status === 402 && q.body.price
-              ? { ...c, price: String(q.body.price), nextFree: Number(q.body.nextFree ?? c.nextFree), slot: Number(q.body.runSeconds ?? c.slot) }
-              : null;
+            return q?.status === 402 && q.body.price ? { ...c, price: String(q.body.price), nextFree: Number(q.body.startBy ?? c.nextFree) } : null;
           }),
       )
     ).filter((c): c is Provider => !!c && BigInt(c.price) <= maxBooking);
+    const runAt = (c: Provider) => runFor(c, job.maxTokens) + LOG_SLACK; // run limit plus the log's delay
     const byPrice = (a: Provider, b: Provider) => Number(BigInt(a.price) - BigInt(b.price));
     // If no provider can start in time on its own, go where an earlier slot is already on offer for a
     // swap: slots only trade within one provider, so that's the only place a late booking can be fixed.
     const budget = terms.lateCost ?? cfg.lateCost;
     const swappable = async (c: Provider) =>
       trading &&
-      (await findOffers(reader, c.id, { myStart: c.nextFree, myLatest: deadline - c.slot, notBefore: now() + NOT_BEFORE + 15, budget })).entities.some((r) => r.seller.value !== me.id);
-    const late = quoted.filter((c) => c.nextFree + c.slot > deadline);
+      (await findOffers(reader, c.id, { myStart: c.nextFree, myLatest: deadline - runAt(c), notBefore: now() + NOT_BEFORE + 15, budget, minTokens: job.maxTokens })).entities.some(
+        (r) => r.seller.value !== me.id,
+      );
+    const late = quoted.filter((c) => c.nextFree + runAt(c) > deadline);
     const rescue = new Set<string>();
     for (const c of late) if (await swappable(c).catch(() => false)) rescue.add(c.id);
     const ranked = [
-      ...quoted.filter((c) => c.nextFree + c.slot <= deadline).sort(byPrice),
+      ...quoted.filter((c) => c.nextFree + runAt(c) <= deadline).sort(byPrice),
       ...late.filter((c) => rescue.has(c.id)).sort(byPrice),
       ...late.filter((c) => !rescue.has(c.id)).sort((a, b) => a.nextFree - b.nextFree || byPrice(a, b)),
     ];
@@ -352,13 +353,15 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       say(`could not book "${t.label}" at ${p.name}: ${booked.status} ${booked.body.error}`);
     }
     if (booked.status !== 200 || !p) return { error: String(booked.body.error) };
-    // A ticket is a place in the queue; `eta` is the provider's estimate of when it starts.
-    const { ticket: serial, eta: start, price } = booked.body as { ticket: number; eta: number; price: string };
+    // A ticket is a place in the queue the provider promises to start by `startBy`, or refund.
+    const { ticket: serial, startBy: start, price } = booked.body as { ticket: number; startBy: number; price: string };
     const chosen = p;
     hub.track(chosen);
     await locked(async () => {
       state.slots[slotKey(chosen.id, serial)] = start;
+      state.sizes[slotKey(chosen.id, serial)] = job.maxTokens;
       state.jobs[hash] = {
+        maxTokens: job.maxTokens,
         provider: chosen.id,
         label: t.label,
         deadline: job.deadline,
@@ -373,9 +376,83 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       save();
     });
     emit({ kind: "booked", jobHash: hash, label: t.label, deadline: job.deadline, provider: chosen.id, providerName: chosen.name, serial, start, price, fromUser: !!terms.fromUser });
-    const fits = start + chosen.slot <= job.deadline;
-    say(`booked ${chosen.name} ticket #${serial} (${chosen.model}) for "${t.label}" at ${price} tinybars, starts in ~${start - now()}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
-    return { provider: chosen.id, providerName: chosen.name, jobHash: hash, serial, start, price, slotSeconds: chosen.slot };
+    const run = runFor(chosen, job.maxTokens);
+    const fits = start + run + LOG_SLACK <= job.deadline;
+    say(`booked ${chosen.name} ticket #${serial} (${chosen.model}) for "${t.label}" at ${price} tinybars, starts within ${start - now()}s (guaranteed), runs at most ${run}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
+    return { provider: chosen.id, providerName: chosen.name, jobHash: hash, serial, start, price, slotSeconds: run };
+  }
+
+  /** What startJob returns for a job already recorded. */
+  function booking(hash: string) {
+    const j = state.jobs[hash];
+    const p = known(j.provider);
+    const key = Object.keys(state.slots)
+      .filter((k) => splitKey(k).provider === j.provider)
+      .sort((a, b) => state.slots[a] - state.slots[b])[0]; // the provider runs the most urgent job first, on the earliest ticket
+    const run = runFor(p, j.maxTokens ?? 300);
+    return { provider: p.id, providerName: p.name, jobHash: hash, serial: splitKey(key).serial, start: state.slots[key], price: "0", slotSeconds: run };
+  }
+
+  /**
+   * Run a new job on a ticket this agent already holds and has no job for (a reservation), if that
+   * still meets every deadline there: attaching a job is free, the ticket is already paid for.
+   */
+  async function useReservation(job: Job, hash: string, terms: Terms): Promise<boolean> {
+    for (const provider of activeProviders()) {
+      const p = hub.known(provider);
+      if (!p) continue;
+      const { slots, starts, deadlines, run } = schedule(provider);
+      const spare = slots.length > deadlines.length && slots.some((s) => s.size >= job.maxTokens);
+      if (!spare || !feasible(starts, [...deadlines, job.deadline - LOG_SLACK], Math.max(run, runFor(p, job.maxTokens)))) continue;
+      const res = await postPaid(`${p.bookingUrl}/jobs`, { job, ...signRequest("job", me.id, me.key, hash) }).catch((e) => ({ status: 0, body: { error: e.message } }));
+      if (res.status !== 200) {
+        say(`could not attach "${job.label}" to my ticket at ${p.name}: ${res.status} ${res.body.error}`);
+        continue;
+      }
+      await locked(async () => {
+        state.jobs[hash] = {
+          maxTokens: job.maxTokens,
+          provider,
+          label: job.label,
+          deadline: job.deadline,
+          status: "queued",
+          lateCost: (terms.lateCost ?? cfg.lateCost).toString(),
+          minAsk: (terms.minAsk ?? cfg.minAsk).toString(),
+          fromUser: terms.fromUser,
+          createdAt: now(),
+        };
+        // It's no longer spare: take it off the market (re-listed by reconcileListings if it still can be).
+        for (const s of slots) await unlist(slotKey(provider, s.serial));
+        save();
+      });
+      const b = booking(hash);
+      emit({ kind: "booked", jobHash: hash, label: job.label, deadline: job.deadline, provider, providerName: p.name, serial: b.serial, start: b.start, price: "0", fromUser: !!terms.fromUser });
+      say(`"${job.label}" runs on a ticket I reserved at ${p.name} (no new booking)`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Buy a ticket now for a job that will come at `at`: today's price, a promise for then. */
+  async function reserveAhead(at: number, tokens: number) {
+    const p = [...hub.live.values()].filter((c) => c.maxTokens >= tokens && BigInt(c.price) <= maxBooking).sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)))[0];
+    if (!p) return;
+    await fund(BigInt(p.price) * 2n);
+    const res = await postPaid(`${p.bookingUrl}/reserve`, { maxTokens: tokens, notBefore: at, ...signRequest("reserve", me.id, me.key, `${tokens}@${at}`) }, payer).catch((e) => ({
+      status: 0,
+      body: { error: e.message },
+    }));
+    if (res.status !== 200) return say(`could not reserve at ${p.name}: ${res.status} ${res.body.error}`);
+    hub.track(p);
+    await locked(async () => {
+      const key = slotKey(p.id, res.body.ticket);
+      state.slots[key] = res.body.startBy;
+      state.sizes[key] = tokens;
+      state.stats.reserved = (state.stats.reserved ?? 0) + 1;
+      addTo("spent", res.body.price);
+      save();
+    });
+    say(`RESERVED ${p.name} ticket #${res.body.ticket} (${tokens} tokens) for ${res.body.price} tinybars, starts ${at - now()}s from now (by ${res.body.startBy - now()}s, guaranteed)`);
   }
 
   // ---- buying: behind schedule at a provider, swap the latest slot there for an earlier one ----
@@ -384,21 +461,23 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     for (const provider of activeProviders()) {
       const p = hub.known(provider);
       if (!p) continue;
-      const { slots, starts, deadlines } = schedule(provider);
-      const plan = buyPlan(starts, deadlines, p.slot);
+      const { slots, starts, deadlines, run, need } = schedule(provider);
+      const plan = buyPlan(starts, deadlines, run);
       if (!plan) continue;
       const give = slots.find((s) => s.start === plan.giveStart)!;
       if (give.start < now() + CUTOFF_SECONDS || plan.latestStart < now() + NOT_BEFORE) continue; // too late to trade
-      const budget = buyBudget(provider, starts, deadlines);
+      const budget = buyBudget(provider, starts, deadlines, run);
       if (!budget) continue;
-      const { entities } = await findOffers(reader, provider, { myStart: give.start, myLatest: plan.latestStart, notBefore: now() + NOT_BEFORE, budget });
+      const { entities } = await findOffers(reader, provider, { myStart: give.start, myLatest: plan.latestStart, notBefore: now() + NOT_BEFORE, budget, minTokens: need });
       const candidates = entities.filter((r) => r.seller.value !== me.id);
       let bought = false;
       for (const row of candidates) {
         try {
-          const { sellerSerial, start, price, swapTx } = await take(p, row, give.serial, plan.latestStart, budget);
+          const { sellerSerial, start, size, price, swapTx } = await take(p, row, give.serial, plan.latestStart, budget, need);
           delete state.slots[slotKey(provider, give.serial)];
+          delete state.sizes[slotKey(provider, give.serial)];
           state.slots[slotKey(provider, sellerSerial)] = start;
+          state.sizes[slotKey(provider, sellerSerial)] = size;
           await unlist(slotKey(provider, give.serial));
           state.stats.bought++;
           addTo("spent", price);
@@ -428,7 +507,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
    * pay the provider to tokenize both (only traded tickets ever cost a mint), then the same atomic
    * swap as always: both NFTs and the price in one transaction.
    */
-  async function take(p: Provider, row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveTicket: number, latestStart: number, budget: bigint) {
+  async function take(p: Provider, row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveTicket: number, latestStart: number, budget: bigint, need: number) {
     const seller = row.seller.value;
     const endpoint = row.endpoint.value;
     const sellerTicket = Number(row.ticket.value);
@@ -436,7 +515,8 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     if (row.$owner.toLowerCase() !== (await hub.evmOf(seller))) throw new Error("offer was not written by the seller it names");
     const before = await queueOf(p);
     const theirs = before.get(sellerTicket);
-    if (theirs?.status !== "queued" || theirs.eta > latestStart) throw new Error("that ticket no longer starts early enough");
+    if (theirs?.status !== "queued" || theirs.startBy > latestStart) throw new Error("that ticket isn't promised early enough");
+    if (theirs.maxTokens < need) throw new Error(`that ticket is too small (${theirs.maxTokens} < ${need} tokens)`);
 
     // Ask the seller first: if it refuses, nothing is tokenized and nothing is paid.
     const ask = await postPaid(endpoint, { buyer: me.id, buyerTicket: giveTicket });
@@ -466,7 +546,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const tx = await buildSwap(client, { tokenId: p.tokenId, seller, sellerSerial, buyer: me.id, buyerSerial, price }).sign(parseKey(me.key));
     const res = await postPaid(endpoint, { buyer: me.id, buyerTicket: giveTicket, tx: Buffer.from(tx.toBytes()).toString("base64") });
     if (res.status !== 200) throw new Error(`swap failed (${res.status}): ${res.body.error}`);
-    return { sellerSerial: sellerTicket, start: theirs.eta, price: price.toString(), swapTx: res.body.swapTx as string };
+    return { sellerSerial: sellerTicket, start: theirs.startBy, size: theirs.maxTokens, price: price.toString(), swapTx: res.body.swapTx as string };
   }
 
   // ---- offering: keep one Arkiv offer per slot this agent can spare ----
@@ -482,21 +562,21 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     for (const provider of activeProviders()) {
       const p = hub.known(provider);
       if (!p) continue;
-      const { slots, starts, deadlines } = schedule(provider);
+      const { slots, starts, deadlines, run } = schedule(provider);
       slots.forEach((s, i) => {
         if (s.start < now() + NOT_BEFORE + 5) return; // a buyer couldn't settle in time
-        const latest = latestReplacement(starts, deadlines, i, p.slot);
+        const latest = latestReplacement(starts, deadlines, i, run);
         if (latest === null) return;
-        const latestOk = Math.min(latest, now() + 3600); // spare slot: accepts anything this hour
+        const latestOk = Math.min(latest, now() + 3600); // spare ticket: accepts anything this hour
         const slack = latestOk - s.start;
-        if (!worthListing(slack, p.slot)) return;
-        want.set(slotKey(provider, s.serial), { key: "0x", latestOk, price: askPrice(slack, askFloor(provider), p.slot).toString(), start: s.start, provider, serial: s.serial });
+        if (!worthListing(slack, run)) return;
+        want.set(slotKey(provider, s.serial), { key: "0x", latestOk, price: askPrice(slack, askFloor(provider), run).toString(), start: s.start, provider, serial: s.serial });
       });
     }
     for (const [key, l] of Object.entries(state.listings)) {
       const w = want.get(key);
       // Re-list only on a real change, Arkiv writes aren't free.
-      if (!w || w.price !== l.price || Math.abs(w.latestOk - l.latestOk) >= known(w.provider).slot) await unlist(key);
+      if (!w || w.price !== l.price || Math.abs(w.latestOk - l.latestOk) >= schedule(w.provider).run) await unlist(key);
       else want.delete(key);
     }
     for (const [key, w] of want) {
@@ -505,18 +585,19 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         {
           provider: w.provider,
           ticket: u64(w.serial),
-          eta: u64(w.start),
+          start_by: u64(w.start),
+          max_tokens: u64(state.sizes[key] ?? 0),
           latest_ok_start: u64(w.latestOk),
           min_price: u64(BigInt(w.price)),
           seller: me.id,
           endpoint: `${opts.baseUrl}/offers/${w.provider}/${w.serial}/swap`,
           job_hash: "",
         },
-        // Estimates drift, so the offer is short-lived and re-listed as they move.
-        { expiration: ExpirationTime.atDate(new Date(Math.max(w.start - CUTOFF_SECONDS, now() + 60) * 1000)) },
+        // A ticket may start before its promise, so the offer is short-lived; the seller re-checks anyway.
+        { expiration: ExpirationTime.atDate(new Date(Math.max(Math.min(w.start - CUTOFF_SECONDS, now() + 300), now() + 60) * 1000)) },
       );
       state.listings[key] = { key: entityKey, latestOk: w.latestOk, price: w.price };
-      say(`offered ${known(w.provider).name} ticket #${w.serial} (starts in ~${w.start - now()}s) for ${w.price} tinybars, takes tickets starting up to ${w.latestOk - now()}s from now`);
+      say(`offered ${known(w.provider).name} ticket #${w.serial} (starts within ${w.start - now()}s) for ${w.price} tinybars, takes tickets starting up to ${w.latestOk - now()}s from now`);
     }
     save();
   }
@@ -544,15 +625,19 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const theirQ = q?.get(buyerTicket);
     if (!q || mineQ?.status !== "queued") throw new HttpError(410, "my ticket has already started");
     if (theirQ?.status !== "queued") throw new HttpError(422, `ticket #${buyerTicket} isn't waiting in ${p.name}'s queue`);
-    if (mineQ.eta < now() + CUTOFF_SECONDS) throw new HttpError(410, "my ticket starts too soon to trade");
+    if (mineQ.startBy < now() + CUTOFF_SECONDS) throw new HttpError(410, "my ticket starts too soon to trade");
     // Re-check against today's jobs, not the listing: new work may have arrived since it was written.
-    const { slots, deadlines } = schedule(provider);
-    const after = slots.map((s) => (s.serial === ticket ? theirQ.eta : s.start));
-    if (!feasible(after, deadlines, p.slot)) throw new HttpError(422, `ticket #${buyerTicket} (starts ~${theirQ.eta}) would make me miss a deadline`);
+    const { slots, deadlines, run, need } = schedule(provider);
+    if (theirQ.maxTokens < need) throw new HttpError(422, `ticket #${buyerTicket} is too small for my jobs (${theirQ.maxTokens} < ${need} tokens)`);
+    const after = slots.map((s) => (s.serial === ticket ? theirQ.startBy : s.start));
+    if (!feasible(after, deadlines, run)) throw new HttpError(422, `ticket #${buyerTicket} (start by ${theirQ.startBy}) would make me miss a deadline`);
     const price = BigInt(listing.price);
     // Both tickets must be NFTs for an atomic swap; the buyer pays the provider to tokenize them.
     if (mineQ.serial === null || theirQ.serial === null)
       throw new HttpError(409, "tokenize both tickets first (POST /tickets/tokenize at the provider), then ask again", { price: price.toString() });
+    // Tokenizing locks both from starting until the swap can settle; without the lock, mine could start mid-trade.
+    if (Math.min(mineQ.notBefore, theirQ.notBefore) < now() + SWAP_VALID_SECONDS)
+      throw new HttpError(409, "the tickets aren't locked for a trade: tokenize them again (it's free once minted), then ask again", { price: price.toString() });
     const serial = mineQ.serial;
     const buyerSerial = theirQ.serial;
 
@@ -597,12 +682,14 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     }
     const swapTx = tx.transactionId!.toString();
     delete state.slots[key];
-    state.slots[slotKey(provider, buyerTicket)] = theirQ.eta;
+    delete state.sizes[key];
+    state.slots[slotKey(provider, buyerTicket)] = theirQ.startBy;
+    state.sizes[slotKey(provider, buyerTicket)] = theirQ.maxTokens;
     await unlist(key);
     state.stats.sold++;
     addTo("earned", price);
     save();
-    say(`SWAPPED ${p.name} ticket #${ticket} to ${names[buyer] ?? buyer} for ${price} tinybars, took #${buyerTicket} (starts in ~${theirQ.eta - now()}s): ${hashscan("transaction", swapTx)}`);
+    say(`SWAPPED ${p.name} ticket #${ticket} to ${names[buyer] ?? buyer} for ${price} tinybars, took #${buyerTicket} (starts within ${theirQ.startBy - now()}s): ${hashscan("transaction", swapTx)}`);
 
     // The trade already settled on Hedera; bookkeeping failures are logged, never returned as errors.
     const hcsSeq = await postEvent(client, p.topicId, me.id, me.key, { type: "trade", sellerTicket: ticket, buyerTicket, seller: me.id, buyer, price: price.toString(), swapTx }).catch(
@@ -623,7 +710,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     if (!Number.isInteger(maxTokens) || maxTokens < 1) throw new HttpError(400, "maxTokens must be a positive integer");
     const r = await startJob({ task: spec.task, input: spec.input ?? "", label: spec.label, maxTokens }, { deadline: spec.deadline, lateCost: spec.maxPay, minAsk: spec.minComp, fromUser: true });
     if ("error" in r) throw new HttpError(502, `could not book: ${r.error}`);
-    const onItsOwn = r.start + r.slotSeconds <= spec.deadline;
+    const onItsOwn = r.start + r.slotSeconds + LOG_SLACK <= spec.deadline;
     return { ...r, deadline: spec.deadline, note: onItsOwn ? "its place in the queue meets the deadline" : "its place in the queue is too late; the agent will try to buy an earlier one" };
   }
 
@@ -653,7 +740,6 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   let running = true;
 
   async function tick() {
-    await locked(refreshEtas).catch((e) => say(`queue refresh failed: ${e.message}`));
     for (const { provider, ev } of toDeliver.splice(0)) await deliver(provider, ev).catch((e) => say(`delivery failed: ${e.message}`));
 
     if (now() >= stopTakingWorkAt) {
@@ -683,6 +769,9 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       nextRoutine = now() + cfg.every;
     }
     if (task) await startJob(task);
+    // After this job is booked (so it can't take the ticket meant for the next one): reserve for the
+    // next routine job, due a little after it's made so it's attached before the ticket can start.
+    if (task && cfg.reserveAhead && nextRoutine > now()) await reserveAhead(nextRoutine + 20, cfg.reserveAhead).catch((e) => say(`reserve failed: ${e.message}`));
 
     if (trading) {
       await locked(buy);
