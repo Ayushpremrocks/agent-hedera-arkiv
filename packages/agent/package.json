@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "fleet": "tsx src/fleet.ts"
+    "fleet": "tsx src/fleet.ts",
+    "task": "tsx src/task.ts"
   },
   "dependencies": {
     "@arkiv-network/sdk": "1.0.1",

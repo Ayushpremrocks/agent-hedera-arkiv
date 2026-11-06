@@ -12,6 +12,7 @@
     "provider": "pnpm -C packages/provider start",
     "agent": "pnpm -C packages/agent start",
     "fleet": "pnpm -C packages/agent fleet",
+    "task": "pnpm -C packages/agent task",
     "web": "pnpm -C packages/web dev"
   },
   "devDependencies": {

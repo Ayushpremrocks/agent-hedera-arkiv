@@ -48,8 +48,9 @@ import {
   sha256,
   signRequest,
   slotInfo,
+  verifyRequest,
 } from "@qy/shared";
-import { askPrice, buyPlan, feasible, latestReplacement, withinBudget, worthListing } from "./policy.js";
+import { askPrice, atRisk, buyPlan, feasible, latestReplacement, withinBudget, worthListing } from "./policy.js";
 import { type Market, ROLES, type Task } from "./workloads.js";
 
 const { values: o } = parseArgs({
@@ -103,14 +104,24 @@ const SLOT = Number(profile.slot_seconds.value);
 const NOT_BEFORE = CUTOFF_SECONDS + SWAP_VALID_SECONDS; // a swap signed now must settle before the cutoff
 
 // ---- state, saved so a restart doesn't forget queued work or listings ----
-type JobState = { label: string; deadline: number; status: "queued" | "running" | "done" | "failed"; serial?: number };
+type JobState = {
+  label: string;
+  deadline: number;
+  status: "queued" | "running" | "done" | "failed";
+  serial?: number;
+  lateCost?: string; // most the owner pays (tinybars) to move this job earlier
+  minAsk?: string; // least the owner accepts (tinybars) to let this job wait
+  fromUser?: boolean; // handed in through POST /tasks
+  met?: boolean;
+  file?: string; // delivered result, relative to the agent's data folder
+};
 type Listing = { key: `0x${string}`; latestOk: number; price: string };
 type State = {
   slots: Record<string, number>; // serial -> start, slots this agent holds that haven't run
   jobs: Record<string, JobState>; // jobHash -> state
   listings: Record<string, Listing>; // serial -> live Arkiv offer
   lastSeq: number;
-  stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string };
+  stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string; refunded?: string };
 };
 const DIR = fileURLToPath(new URL(`../../../data/agents/${o.as}`, import.meta.url));
 const STATE_FILE = `${DIR}/state.json`;
@@ -136,6 +147,19 @@ function schedule() {
     .filter((j) => j.status === "queued")
     .map((j) => j.deadline);
   return { slots, starts: slots.map((s) => s.start), deadlines };
+}
+
+const queued = () => Object.values(state.jobs).filter((j) => j.status === "queued");
+/** Budget for buying an earlier slot: the most any at-risk job's owner will pay to be on time. */
+function buyBudget(starts: number[], deadlines: number[]) {
+  const risky = new Set(atRisk(starts, deadlines, SLOT));
+  return queued()
+    .filter((j) => risky.has(j.deadline))
+    .reduce((m, j) => (BigInt(j.lateCost ?? cfg.lateCost) > m ? BigInt(j.lateCost ?? cfg.lateCost) : m), 0n);
+}
+/** Least this agent asks to wait: the highest minimum any of its waiting jobs' owners set. */
+function askFloor() {
+  return queued().reduce((m, j) => (BigInt(j.minAsk ?? cfg.minAsk) > m ? BigInt(j.minAsk ?? cfg.minAsk) : m), cfg.minAsk);
 }
 
 /** One state change at a time: trading decisions, swaps and log updates never interleave. */
@@ -167,6 +191,10 @@ async function pollLog() {
     state.lastSeq = ev.seq;
     if (cfg.trigger?.(ev, me.id)) triggers.push(ev);
     const e = ev.e;
+    if (ev.by === providerId && e.type === "refund" && e.buyer === me.id) {
+      state.stats.refunded = (BigInt(state.stats.refunded ?? "0") + BigInt(e.amount)).toString();
+      say(`refunded ${e.amount} tinybars: ${e.reason}`);
+    }
     // Only the provider's own signed messages say what ran.
     if (ev.by !== providerId || (e.type !== "dispatch" && e.type !== "done" && e.type !== "expired") || e.owner !== me.id) continue;
     if (e.type === "expired") {
@@ -213,7 +241,7 @@ async function deliver(done: LoggedEvent) {
       `${res.body.tokens} tokens from ${res.body.model}. Result sha256 ${done.e.resultHash}, checked against HCS.\n\n${res.body.text}\n`,
   );
   await locked(async () => {
-    Object.assign(job, { status: "done" });
+    Object.assign(job, { status: "done", met, file: file.slice(DIR.length + 1) });
     if (met) state.stats.met++;
     else state.stats.late++;
     save();
@@ -243,21 +271,36 @@ async function market(): Promise<Market> {
   return { me: me.id, names, events: history, offers: offers.filter((x) => x.start > now()) };
 }
 
-async function startJob(t: Task) {
-  const job: Job = { kind: "llm", task: t.task, input: t.input.slice(-MAX_INPUT_CHARS), maxTokens: t.maxTokens, deadline: now() + cfg.deadlineIn, label: t.label };
+type Terms = { deadline?: number; lateCost?: bigint; minAsk?: bigint; fromUser?: boolean };
+
+/** Book a slot for a task. Returns the booking, or an error message if the provider refused. */
+async function startJob(t: Task, terms: Terms = {}) {
+  const deadline = terms.deadline ?? now() + cfg.deadlineIn;
+  const job: Job = { kind: "llm", task: t.task, input: t.input.slice(-MAX_INPUT_CHARS), maxTokens: t.maxTokens, deadline, label: t.label };
   const hash = jobHash(job);
   const booked = await postPaid(`${bookingUrl}/book`, { job, ...signRequest("book", me.id, me.key, hash) }, payer);
-  if (booked.status !== 200) return say(`could not book "${t.label}": ${booked.status} ${booked.body.error}`);
+  if (booked.status !== 200) {
+    say(`could not book "${t.label}": ${booked.status} ${booked.body.error}`);
+    return { error: `${booked.status} ${booked.body.error}` };
+  }
   const { serial, start, price } = booked.body as { serial: number; start: number; price: string };
   await locked(async () => {
     state.slots[serial] = start;
-    state.jobs[hash] = { label: t.label, deadline: job.deadline, status: "queued" };
+    state.jobs[hash] = {
+      label: t.label,
+      deadline: job.deadline,
+      status: "queued",
+      lateCost: (terms.lateCost ?? cfg.lateCost).toString(),
+      minAsk: (terms.minAsk ?? cfg.minAsk).toString(),
+      fromUser: terms.fromUser,
+    };
     state.stats.booked++;
     addTo("spent", price);
     save();
   });
   const fits = start + SLOT <= job.deadline;
   say(`booked #${serial} for "${t.label}" at ${price} tinybars, starts in ${start - now()}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
+  return { jobHash: hash, serial, start, price };
 }
 
 // ---- buying: behind schedule, swap the latest slot for an earlier one ----
@@ -269,11 +312,13 @@ async function buy() {
   const give = slots.find((s) => s.start === plan.giveStart)!;
   if (give.start < now() + CUTOFF_SECONDS) return; // too close to start to trade
   if (plan.latestStart < now() + NOT_BEFORE) return; // no tradeable slot could start early enough any more
-  const { entities } = await findOffers(reader, providerId, { myStart: give.start, myLatest: plan.latestStart, notBefore: now() + NOT_BEFORE, budget: cfg.lateCost });
+  const budget = buyBudget(starts, deadlines);
+  if (!budget) return;
+  const { entities } = await findOffers(reader, providerId, { myStart: give.start, myLatest: plan.latestStart, notBefore: now() + NOT_BEFORE, budget });
   const candidates = entities.filter((r) => r.seller.value !== me.id);
   for (const row of candidates) {
     try {
-      const { sellerSerial, start, price, swapTx } = await take(row, give.serial, plan.latestStart);
+      const { sellerSerial, start, price, swapTx } = await take(row, give.serial, plan.latestStart, budget);
       delete state.slots[give.serial];
       state.slots[sellerSerial] = start;
       await unlist(give.serial);
@@ -289,11 +334,11 @@ async function buy() {
   // Say it once per shortfall, not every tick.
   if (!candidates.length && lastShortfall !== plan.latestStart) {
     lastShortfall = plan.latestStart;
-    say(`behind schedule: need a slot starting by ${plan.latestStart - now()}s from now, none for sale within ${cfg.lateCost} tinybars`);
+    say(`behind schedule: need a slot starting by ${plan.latestStart - now()}s from now, none for sale within ${budget} tinybars`);
   }
 }
 
-async function take(row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveSerial: number, latestStart: number) {
+async function take(row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveSerial: number, latestStart: number, budget: bigint) {
   const seller = row.seller.value;
   const endpoint = row.endpoint.value;
   const sellerSerial = Number(row.slot_serial.value);
@@ -308,7 +353,7 @@ async function take(row: Awaited<ReturnType<typeof findOffers>>["entities"][numb
   const quote = ask.body.accepts?.[0];
   if (quote?.scheme !== "qy-atomic-swap" || quote.payTo !== seller || quote.extra?.sellerSerial !== sellerSerial) throw new Error("seller quoted different terms");
   const price = BigInt(quote.amount);
-  if (!withinBudget(price, cfg.lateCost)) throw new Error(`price ${price} over budget ${cfg.lateCost}`);
+  if (!withinBudget(price, budget)) throw new Error(`price ${price} over budget ${budget}`);
 
   const tx = await buildSwap(client, { tokenId, seller, sellerSerial, buyer: me.id, buyerSerial: giveSerial, price }).sign(parseKey(me.key));
   const res = await postPaid(endpoint, { buyer: me.id, buyerSerial: giveSerial, tx: Buffer.from(tx.toBytes()).toString("base64") });
@@ -334,7 +379,7 @@ async function reconcileListings() {
     const latestOk = Math.min(latest, now() + 3600); // spare slot: accepts anything this hour
     const slack = latestOk - s.start;
     if (!worthListing(slack, SLOT)) return;
-    want.set(s.serial, { key: "0x", latestOk, price: askPrice(slack, cfg.minAsk, SLOT).toString(), start: s.start });
+    want.set(s.serial, { key: "0x", latestOk, price: askPrice(slack, askFloor(), SLOT).toString(), start: s.start });
   });
 
   for (const [serial, l] of Object.entries(state.listings)) {
@@ -372,7 +417,63 @@ await serve(port, {
     if (inFlight) throw new HttpError(409, "busy, try again shortly");
     return locked(() => swap(Number(params.serial), body));
   },
+  "POST /tasks": ({ body }) => acceptTask(body),
+  "POST /tasks/list": ({ body }) => listTasks(body),
 });
+
+// ---- the user's side: hand the agent a task, read back what it delivered ----
+
+/** Only this agent's own account (its user holds the key) may give it work or read its results. */
+async function owner(action: string, subject: string, body: any) {
+  let account;
+  try {
+    account = await verifyRequest(action, subject, body ?? {});
+  } catch (e) {
+    throw new HttpError(401, (e as Error).message);
+  }
+  if (account !== me.id) throw new HttpError(403, "only this agent's own account can do that");
+}
+
+const tinybars = (x: unknown, name: string) => {
+  if (typeof x !== "string" || !/^\d{1,15}$/.test(x)) throw new HttpError(400, `${name} must be tinybars as a digit string`);
+  return BigInt(x);
+};
+
+/**
+ * Body: { spec: { task, input?, label, deadline (unix s), maxTokens?, maxPay, minComp }, account, ts, sig }
+ * signed over sha256(JSON of spec). maxPay: most to pay to run earlier; minComp: least to accept to wait.
+ */
+async function acceptTask(body: any): Promise<Res> {
+  const spec = body?.spec;
+  await owner("task", sha256(JSON.stringify(spec ?? null)), body);
+  if (typeof spec.task !== "string" || !spec.task || typeof spec.label !== "string" || !spec.label) throw new HttpError(400, "task and label are required");
+  if (spec.input !== undefined && typeof spec.input !== "string") throw new HttpError(400, "input must be text");
+  const maxTokens = spec.maxTokens ?? 300;
+  if (!Number.isInteger(spec.deadline) || spec.deadline < now() + SLOT) throw new HttpError(400, `deadline must be unix seconds at least ${SLOT}s from now`);
+  if (!Number.isInteger(maxTokens) || maxTokens < 1) throw new HttpError(400, "maxTokens must be a positive integer");
+  const terms = { deadline: spec.deadline, lateCost: tinybars(spec.maxPay, "maxPay"), minAsk: tinybars(spec.minComp, "minComp"), fromUser: true };
+  const r = await startJob({ task: spec.task, input: spec.input ?? "", label: spec.label, maxTokens }, terms);
+  if ("error" in r) throw new HttpError(502, `provider refused the booking: ${r.error}`);
+  const onItsOwn = r.start + SLOT <= spec.deadline;
+  return { body: { ...r, deadline: spec.deadline, note: onItsOwn ? "its own slot meets the deadline" : "its own slot is too late; the agent will try to buy an earlier one" } };
+}
+
+/** Every task the user handed in, with its status and, once delivered, the checked result. */
+async function listTasks(body: any): Promise<Res> {
+  await owner("tasks", "list", body);
+  const tasks = Object.entries(state.jobs)
+    .filter(([, j]) => j.fromUser)
+    .map(([hash, j]) => ({
+      jobHash: hash,
+      label: j.label,
+      deadline: j.deadline,
+      status: j.status,
+      slot: j.serial ?? null,
+      onTime: j.met ?? null,
+      result: j.file ? readFileSync(`${DIR}/${j.file}`, "utf8") : null,
+    }));
+  return { body: { agent: me.id, tasks } };
+}
 
 async function swap(serial: number, body: any): Promise<Res> {
   const listing = state.listings[serial];
@@ -476,7 +577,7 @@ async function tick() {
     task = cfg.make(await market(), triggers.at(-1));
     triggers.length = 0;
     lastTriggered = now();
-  } else if (now() >= nextRoutine) {
+  } else if (cfg.every && now() >= nextRoutine) {
     task = cfg.make(await market());
     nextRoutine = now() + cfg.every;
   }

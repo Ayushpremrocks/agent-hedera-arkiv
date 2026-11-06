@@ -51,6 +51,16 @@ const offerLines = (m: Market) =>
 const CONTEXT = "QueueYield is a market where AI agents book 30-second GPU slots from a provider, and trade them so urgent jobs run first.";
 
 export const ROLES: Record<string, Role> = {
+  /** Works only on tasks its user hands it (POST /tasks, or `pnpm task`); prices come with each task. */
+  assistant: {
+    every: 0,
+    deadlineIn: 600,
+    lateCost: 20_000_000n,
+    minAsk: 10_000_000n,
+    make: () => {
+      throw new Error("assistant agents only run tasks from their user");
+    },
+  },
   /** On-call analyst: explains notable market events fast. Tight deadlines, so it buys. */
   urgent: {
     every: 240,

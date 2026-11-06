@@ -36,7 +36,7 @@ import {
 import { ensureInfra, issueSlot } from "./chain.js";
 import { LLM_BASE_URL, LLM_MODEL, runJob, warmUp } from "./runner.js";
 import { bookingPrice } from "./pricing.js";
-import { clearQueue, dequeue, enqueue, loadResult, nextJob, queues, saveResult } from "./store.js";
+import { clearQueue, dequeue, enqueue, loadResult, nextJob, paid, queues, savePaid, saveResult } from "./store.js";
 
 const PORT = Number(process.env.PROVIDER_PORT ?? 4000);
 const BOOKING_URL = process.env.PROVIDER_URL ?? `http://localhost:${PORT}`;
@@ -158,7 +158,16 @@ async function runSlot(serial: number, start: number) {
     saveResult(p.hash, { owner, text: r.text, tokens: r.tokens, model: LLM_MODEL, ms });
     log({ type: "done", serial, owner, jobHash: p.hash, ok: true, result: "ok", resultHash: sha256(r.text), tokens: r.tokens, ms });
   } catch (e) {
-    log({ type: "done", serial, owner, jobHash: p.hash, ok: false, result: (e as Error).message, resultHash: null, tokens: 0, ms: Date.now() - t0 });
+    const reason = (e as Error).message;
+    log({ type: "done", serial, owner, jobHash: p.hash, ok: false, result: reason, resultHash: null, tokens: 0, ms: Date.now() - t0 });
+    // A job that overran its own slot is the owner's doing. Anything else (late dispatch, model
+    // server down) is the provider breaking the contract: pay the slot's price back to its holder.
+    const sale = paid[serial];
+    if (!reason.startsWith("timeout") && sale) {
+      delete paid[serial];
+      savePaid();
+      await refund(owner, BigInt(sale.amount), sale.paymentTx, `provider failed slot #${serial}: ${reason}`);
+    }
   }
 }
 
@@ -257,6 +266,8 @@ await serve(PORT, {
       throw e;
     }
     settle(start, issued.serial);
+    paid[issued.serial] = { amount: payload.accepted.amount, paymentTx: settled.transaction };
+    savePaid();
     log({ type: "booked", serial: issued.serial, start, owner: account, jobHash: hash, price: payload.accepted.amount });
     return {
       body: { serial: issued.serial, start, tokenId, topicId, price: payload.accepted.amount, paymentTx: settled.transaction, transferTx: issued.transferTx },

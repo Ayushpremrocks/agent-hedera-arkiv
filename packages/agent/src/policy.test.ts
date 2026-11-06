@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { askPrice, buyPlan, feasible, latestReplacement, withinBudget, worthListing } from "./policy.js";
+import { askPrice, atRisk, buyPlan, feasible, latestReplacement, withinBudget, worthListing } from "./policy.js";
 
 const S = 30; // slot seconds
 
@@ -46,6 +46,12 @@ test("buyer: gives its latest slot and needs one starting early enough", () => {
   assert.ok(feasible([plan.latestStart, 200], [210, 1000], S));
   // Deadline already unreachable: buying can't help, so don't pay.
   assert.equal(buyPlan([500], [20], S), null);
+});
+
+test("atRisk: names exactly the deadlines the slots miss", () => {
+  assert.deepEqual(atRisk([100, 200], [130, 400], S), []);
+  assert.deepEqual(atRisk([100, 200], [130, 220], S), [220]);
+  assert.deepEqual(atRisk([300], [150, 900], S), [150, 900]); // one slot, two jobs: the 900 one has no slot
 });
 
 test("asks: less slack costs more, never below the minimum or above 4x", () => {

@@ -12,6 +12,12 @@ export function feasible(starts: number[], deadlines: number[], slotSeconds: num
   return d.every((deadline, i) => s[i] + slotSeconds <= deadline);
 }
 
+/** Deadlines that the current slots miss (earliest deadline runs in the earliest slot). */
+export function atRisk(starts: number[], deadlines: number[], slotSeconds: number): number[] {
+  const s = [...starts].sort((a, b) => a - b);
+  return [...deadlines].sort((a, b) => a - b).filter((d, i) => i >= s.length || s[i] + slotSeconds > d);
+}
+
 /**
  * The latest start a slot could have in place of `starts[i]` with every deadline still met.
  *   Infinity: slot i is spare, any replacement (or none) works.
