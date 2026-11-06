@@ -8,7 +8,8 @@ import { Empty, Ledger, Notice, PageHeader, useNow } from "../components/ui";
 import { clock, hashscan, hbar } from "../lib/format";
 import { type LogEvent, type Provider, type QueueEntry, type TrackRecord, keptRate } from "../lib/market";
 
-type EscrowStats = { account: string; held: number; released: number; refunded: number; heldAmount: string; releasedAmount: string; refundedAmount: string };
+// partial: tickets that started late but delivered, so the buyer got a credit scaled to the delay.
+type EscrowStats = { account: string; held: number; released: number; partial: number; refunded: number; heldAmount: string; paidAmount: string; refundedAmount: string };
 type Detail = { provider: Provider; online: boolean; record: TrackRecord; recent: (Omit<LogEvent, "provider" | "verified"> & { i: number })[]; escrow: EscrowStats };
 
 function line(e: any): string {
@@ -112,7 +113,7 @@ export function ProviderPage() {
               <div>
                 <dt>Escrow now</dt>
                 <dd>
-                  {es.held} held · {es.released} paid out · {es.refunded} refunded ({hbar(es.refundedAmount)})
+                  {es.held} held · {es.released} paid in full · {es.partial} credited for a late start · {es.refunded} refunded ({hbar(es.refundedAmount)} back to buyers)
                 </dd>
               </div>
             )}

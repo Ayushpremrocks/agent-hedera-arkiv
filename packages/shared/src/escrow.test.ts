@@ -1,26 +1,35 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ABSENT_AFTER, LATE_AFTER, NO_RESULT_AFTER, decide } from "./escrow.js";
+import { ABSENT_AFTER, LATE_AFTER, NO_RESULT_AFTER, type Verdict, decide, lateCredit } from "./escrow.js";
 
 const at = 1000;
+const pct = (v: Verdict) => (v.action === "settle" ? v.refundPct : null); // null: still held
 
-test("on time and delivered pays the provider", () => {
-  assert.equal(decide({ startBy: at, dispatch: { ts: at + LATE_AFTER, jobHash: "h" }, done: { ok: true } }, at + 30).action, "release");
+test("on time and delivered: the provider keeps it all", () => {
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at + LATE_AFTER, jobHash: "h" }, done: { ok: true } }, at + 30)), 0);
 });
 
-test("a late start refunds the buyer, whatever happened after", () => {
-  const v = decide({ startBy: at, dispatch: { ts: at + LATE_AFTER + 1, jobHash: "h" }, done: { ok: true } }, at + 30);
-  assert.equal(v.action, "refund");
+test("late but delivered: a credit scaled to how late, full only past a minute", () => {
+  assert.equal(lateCredit(LATE_AFTER), 0);
+  assert.equal(lateCredit(LATE_AFTER + 1), 25);
+  assert.equal(lateCredit(30), 25);
+  assert.equal(lateCredit(45), 50);
+  assert.equal(lateCredit(61), 100);
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at + 20, jobHash: "h" }, done: { ok: true } }, at + 40)), 25);
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at + 90, jobHash: "h" }, done: { ok: true } }, at + 99)), 100);
 });
 
-test("on time but failed refunds; on time with no job attached pays (the holder's choice)", () => {
-  assert.equal(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" }, done: { ok: false } }, at + 5).action, "refund");
-  assert.equal(decide({ startBy: at, dispatch: { ts: at, jobHash: null } }, at + 5).action, "release");
+test("nothing delivered is refunded in full", () => {
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" }, done: { ok: false } }, at + 5)), 100);
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" } }, at + NO_RESULT_AFTER + 1)), 100);
+  assert.equal(pct(decide({ startBy: at }, at + ABSENT_AFTER + 1)), 100);
 });
 
-test("waits for evidence before refunding on absence", () => {
-  assert.equal(decide({ startBy: at }, at + ABSENT_AFTER).action, "hold");
-  assert.equal(decide({ startBy: at }, at + ABSENT_AFTER + 1).action, "refund");
-  assert.equal(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" } }, at + NO_RESULT_AFTER).action, "hold");
-  assert.equal(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" } }, at + NO_RESULT_AFTER + 1).action, "refund");
+test("on time with no job attached is the holder's choice: the provider is paid", () => {
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at, jobHash: null } }, at + 5)), 0);
+});
+
+test("waits for evidence before deciding", () => {
+  assert.equal(pct(decide({ startBy: at }, at + ABSENT_AFTER)), null);
+  assert.equal(pct(decide({ startBy: at, dispatch: { ts: at, jobHash: "h" } }, at + NO_RESULT_AFTER)), null);
 });

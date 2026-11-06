@@ -17,8 +17,9 @@ type Entry = {
   amount: string; // tinybars held
   owner: string; // who booked it
   startBy: number;
-  status: "held" | "released" | "refunded" | "not-escrowed";
-  to?: string; // who was paid
+  status: "held" | "released" | "partial" | "refunded" | "not-escrowed"; // partial: a late-start credit
+  refund?: string; // tinybars that went back to the ticket's holder
+  to?: string; // who got the refund, if any
   reason?: string;
   tx?: string;
 };
@@ -70,8 +71,8 @@ export async function startEscrow(opts: {
 
   async function settle() {
     const nowS = Date.now() / 1000;
-    const credits = new Map<string, bigint>();
-    const decided: { e: Entry; to: string; status: "released" | "refunded"; reason: string }[] = [];
+    // Each decision credits the provider (what it keeps) and/or the ticket's holder (the refund).
+    const decided: { e: Entry; credits: [string, bigint][]; status: Entry["status"]; reason: string; refund: string; to: string }[] = [];
     const watch = new Set([...opts.live(), ...Object.values(entries).filter((e) => e.status === "held").map((e) => e.provider)]);
     for (const p of [...watch].flatMap((pid) => opts.known(pid) ?? [])) {
       const own = (await opts.readLog(p.id)).filter((x) => x.by === p.id); // only the provider's own signed messages
@@ -99,34 +100,44 @@ export async function startEscrow(opts: {
           nowS,
         );
         if (verdict.action === "hold") continue;
-        let to = p.id;
-        if (verdict.action === "refund") {
+        const amount = BigInt(e.amount);
+        const refund = (amount * BigInt(verdict.refundPct)) / 100n;
+        let to = e.owner;
+        if (refund > 0n) {
           // The refund belongs to whoever held the ticket: the booker, or the NFT's holder if it was traded,
           // read from the NFT's own transfer history (never from what the provider says).
           const serial = serialOf.get(e.ticket);
           to = serial === undefined ? e.owner : ((await holderAt(p.tokenId, serial, d?.ts ?? nowS).catch(() => null)) ?? e.owner);
         }
-        credits.set(to, (credits.get(to) ?? 0n) + BigInt(e.amount));
-        decided.push({ e, to, status: verdict.action === "release" ? "released" : "refunded", reason: verdict.reason });
+        const credits: [string, bigint][] = [];
+        if (refund > 0n) credits.push([to, refund]);
+        if (amount > refund) credits.push([p.id, amount - refund]);
+        const status = refund === 0n ? "released" : refund === amount ? "refunded" : "partial";
+        decided.push({ e, credits, status, reason: verdict.reason, refund: refund.toString(), to });
       }
     }
     if (!decided.length) return;
-    // One transfer settles many decisions (a handful of accounts per transaction).
-    const accounts = [...credits.entries()];
-    for (let i = 0; i < accounts.length; i += 8) {
-      const chunk = accounts.slice(i, i + 8);
-      const total = chunk.reduce((s, [, a]) => s + a, 0n);
-      const tx = new TransferTransaction().setTransactionMemo("dani.ai escrow").addHbarTransfer(id, Hbar.fromTinybars((-total).toString()));
-      for (const [acct, a] of chunk) tx.addHbarTransfer(acct, Hbar.fromTinybars(a.toString()));
-      try {
-        const sent = await tx.execute(client);
-        await sent.getReceipt(client);
-        const txId = sent.transactionId.toString();
-        for (const d of decided) if (chunk.some(([acct]) => acct === d.to)) Object.assign(d.e, { status: d.status, to: d.to, reason: d.reason, tx: txId });
-        console.log(`escrow: paid ${chunk.map(([a, t]) => `${a} ${t}`).join(", ")} (${txId})`);
-      } catch (err) {
-        console.error(`escrow payout failed, retrying next round: ${(err as Error).message}`);
-      }
+    // One all-or-nothing transfer per round: it either settles every decision in it or none, so a failure
+    // can't pay anyone twice. A transfer takes ten accounts, so decisions past that wait for the next round.
+    const total = new Map<string, bigint>();
+    const batch: typeof decided = [];
+    for (const d of decided) {
+      const accounts = new Set([...total.keys(), ...d.credits.map(([a]) => a)]);
+      if (accounts.size > 9) continue;
+      for (const [a, v] of d.credits) total.set(a, (total.get(a) ?? 0n) + v);
+      batch.push(d);
+    }
+    const sum = [...total.values()].reduce((x, y) => x + y, 0n);
+    const tx = new TransferTransaction().setTransactionMemo("dani.ai escrow").addHbarTransfer(id, Hbar.fromTinybars((-sum).toString()));
+    for (const [a, v] of total) tx.addHbarTransfer(a, Hbar.fromTinybars(v.toString()));
+    try {
+      const sent = await tx.execute(client);
+      await sent.getReceipt(client);
+      const txId = sent.transactionId.toString();
+      for (const d of batch) Object.assign(d.e, { status: d.status, reason: d.reason, refund: d.refund, to: d.refund === "0" ? undefined : d.to, tx: txId });
+      console.log(`escrow: settled ${batch.length} ticket(s): ${[...total].map(([a, v]) => `${a} +${v}`).join(", ")} (${txId})`);
+    } catch (err) {
+      console.error(`escrow payout failed, retrying next round: ${(err as Error).message}`);
     }
     save();
   }
@@ -144,15 +155,19 @@ export async function startEscrow(opts: {
     id,
     /** Held, paid out and refunded for one provider (or all), in counts and tinybars. */
     stats(provider?: string) {
-      const s = { held: 0, released: 0, refunded: 0, heldAmount: 0n, releasedAmount: 0n, refundedAmount: 0n };
+      const s = { held: 0, released: 0, partial: 0, refunded: 0, heldAmount: 0n, paidAmount: 0n, refundedAmount: 0n };
       for (const e of Object.values(entries)) {
         if (provider && e.provider !== provider) continue;
-        if (e.status === "held" || e.status === "released" || e.status === "refunded") {
-          s[e.status]++;
-          s[`${e.status}Amount`] += BigInt(e.amount);
+        if (e.status === "not-escrowed") continue;
+        s[e.status]++;
+        if (e.status === "held") s.heldAmount += BigInt(e.amount);
+        else {
+          const back = BigInt(e.refund ?? (e.status === "refunded" ? e.amount : "0")); // entries from before credits: all or nothing
+          s.refundedAmount += back;
+          s.paidAmount += BigInt(e.amount) - back;
         }
       }
-      return { ...s, heldAmount: s.heldAmount.toString(), releasedAmount: s.releasedAmount.toString(), refundedAmount: s.refundedAmount.toString() };
+      return { ...s, heldAmount: s.heldAmount.toString(), paidAmount: s.paidAmount.toString(), refundedAmount: s.refundedAmount.toString() };
     },
   };
 }

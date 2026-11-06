@@ -1,7 +1,7 @@
 // End-to-end check against a running provider with the model up: auth failures, paid booking
 // (x402) into a queue with no mint, the startBy promise and ticket sizes, a reservation with its job
 // attached later, tokenizing with a trade lock, real model jobs, private results and the batched log.
-import { type Job, type LoggedEvent, MIRROR, hbarPayer, hederaClient, jobHash, postPaid, readEvents, returnTicket, role, sha256, signRequest, slotInfo, waitForOwner } from "@qy/shared";
+import { type Job, LATE_AFTER, type LoggedEvent, MIRROR, hbarPayer, hederaClient, jobHash, postPaid, readEvents, returnTicket, role, sha256, signRequest, slotInfo, waitForOwner } from "@qy/shared";
 
 const URL = process.env.PROVIDER_URL ?? "http://localhost:4000";
 const A = role("AGENT_A");
@@ -31,7 +31,7 @@ const run = now();
 const job = (label: string, task: string, input: string, maxTokens = 120): Job => ({ kind: "llm", task, input: `${input} (run ${run})`, maxTokens, deadline: now() + 600, label });
 
 const HOST = process.env.HOST_URL ?? "http://localhost:4100";
-const escrowStats = async () => (await (await fetch(`${HOST}/api/escrow`)).json()) as { account: string; released: number; refunded: number };
+const escrowStats = async () => (await (await fetch(`${HOST}/api/escrow`)).json()) as { account: string; released: number; partial: number; refunded: number };
 const e0 = await escrowStats();
 const q0 = await queue();
 const BIG = q0.maxTokens; // the largest job the provider accepts
@@ -121,7 +121,7 @@ expect("the tokenized ticket still ran A's job", !!dW?.ok && dW.owner === A.id, 
 // Every promise kept: each ticket booked in this run was dispatched by its startBy (+ grace).
 const promised = new Map(ofType("booked").map((x) => [x.e.ticket, x.e.startBy]));
 const dispatched = ofType("dispatch").filter((x) => promised.has(x.e.ticket));
-const lateOnes = dispatched.filter((x) => x.ts > promised.get(x.e.ticket)! + q0.graceSeconds + 3); // consensus lags the dispatch by a few seconds
+const lateOnes = dispatched.filter((x) => x.ts > promised.get(x.e.ticket)! + LATE_AFTER); // the escrow's own tolerance (grace + batching + consensus)
 expect("every ticket started by its promised startBy", dispatched.length >= 6 && !lateOnes.length, `${dispatched.length} dispatched, late: ${lateOnes.map((x) => `#${x.e.ticket} +${x.ts - promised.get(x.e.ticket)!}s`).join(", ") || "none"}`);
 const rd = dispatched.find((x) => x.e.ticket === r.body.ticket);
 // A holder's jobs run on whichever of its tickets fits, most urgent first: either of A's small jobs.
@@ -137,7 +137,7 @@ for (let i = 0; i < 12 && e1.released - e0.released < 4; i++) {
   e1 = await escrowStats();
 }
 expect("the escrow paid the provider for tickets that started on time", e1.released - e0.released >= 4, `${e1.released - e0.released} paid out`);
-expect("the escrow refunded nothing: no promise was missed", e1.refunded === e0.refunded, `${e1.refunded - e0.refunded} refunded`);
+expect("the escrow credited and refunded nothing: no promise was missed", e1.refunded === e0.refunded && e1.partial === e0.partial, `${e1.partial - e0.partial} credited, ${e1.refunded - e0.refunded} refunded`);
 
 // ---- NFT reuse: a returned ticket NFT is reissued (metadata rewrite) instead of minted ----
 if (serial > 0) {
