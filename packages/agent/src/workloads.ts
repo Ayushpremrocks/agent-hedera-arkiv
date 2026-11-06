@@ -32,10 +32,10 @@ export function line(ev: LoggedEvent, names: Record<string, string>) {
   const e = ev.e;
   const t = clock(ev.ts);
   switch (e.type) {
-    case "booked": return `${t} ${n(e.owner)} booked slot #${e.serial} starting ${clock(e.start)} for ${hbar(e.price ?? 0)}`;
-    case "dispatch": return `${t} slot #${e.serial} started ${e.jobHash ? `${n(e.owner)}'s job` : "with no job"}`;
-    case "done": return `${t} slot #${e.serial} ${e.ok ? `finished ${n(e.owner)}'s job (${e.tokens} tokens, ${(e.ms / 1000).toFixed(1)}s)` : `failed for ${n(e.owner)}: ${e.result}`}`;
-    case "trade": return `${t} ${n(e.seller)} sold slot #${e.sellerSerial} to ${n(e.buyer)} for ${hbar(e.price)}, taking #${e.buyerSerial}`;
+    case "booked": return `${t} ${n(e.owner)} booked ticket #${e.ticket} for ${hbar(e.price ?? 0)}`;
+    case "dispatch": return `${t} ticket #${e.ticket} started ${e.jobHash ? `${n(e.owner)}'s job` : "with no job"}`;
+    case "done": return `${t} ticket #${e.ticket} ${e.ok ? `finished ${n(e.owner)}'s job (${e.tokens} tokens, ${(e.ms / 1000).toFixed(1)}s)` : `failed for ${n(e.owner)}: ${e.result}`}`;
+    case "trade": return `${t} ${n(e.seller)} gave ticket #${e.sellerTicket} to ${n(e.buyer)} for ${hbar(e.price)}, taking #${e.buyerTicket}`;
     case "expired": return `${t} ${n(e.owner)}'s job expired unrun`;
     case "refund": return `${t} provider refunded ${hbar(e.amount)} to ${n(e.buyer)} (${e.reason})`;
     case "delivered": return `${t} ${n(ev.by)} got "${e.label}" ${e.met ? "on time" : `late by ${e.finishedAt - e.deadline}s`}`;

@@ -42,7 +42,7 @@ export async function ensureInfra(client: Client, provider: Role, treasury: Role
   return infra;
 }
 
-/** Mint one slot NFT and hand it from the treasury to `owner`. Returns the serial. */
+/** Mint one ticket NFT and hand it from the treasury to `owner`. Returns the serial. */
 export async function issueSlot(client: Client, tokenId: string, treasury: Role, owner: string, meta: SlotMeta) {
   const mint = await (
     await new TokenMintTransaction().setTokenId(tokenId).setMetadata([encodeSlot(meta)]).execute(client)

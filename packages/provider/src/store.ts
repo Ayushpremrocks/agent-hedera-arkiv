@@ -39,17 +39,29 @@ export function clearQueue(account: string) {
   return n;
 }
 
-/** Earliest deadline first: a slot the owner just bought goes to its most urgent job. */
+/** Earliest deadline first: a ticket the owner just bought goes to its most urgent job. */
 export function nextJob(account: string): Queued | undefined {
   return [...(queues.get(account) ?? [])].sort((a, b) => a.job.deadline - b.job.deadline)[0];
 }
 
-/** What each slot was sold for, so a slot the provider fails to serve can be paid back. */
-const PAID_FILE = `${DATA_DIR}/paid.json`;
-export const paid: Record<string, { amount: string; paymentTx: string }> = existsSync(PAID_FILE) ? JSON.parse(readFileSync(PAID_FILE, "utf8")) : {};
-export function savePaid() {
+/**
+ * Queue tickets: a ticket is a paid place in this provider's queue. Its owner is recorded here (and
+ * in the signed log) until someone trades it; then it's minted as an NFT and the NFT's holder owns it.
+ */
+export type Ticket = {
+  owner: string; // who booked it (ignored once `serial` is set: the NFT holder owns it)
+  price: string; // tinybars paid, refunded if the provider fails to serve it
+  paymentTx: string;
+  status: "queued" | "running" | "done";
+  serial?: number; // the ticket's NFT, if it has been tokenized for a trade
+};
+const TICKETS_FILE = `${DATA_DIR}/tickets.json`;
+const saved = existsSync(TICKETS_FILE) ? JSON.parse(readFileSync(TICKETS_FILE, "utf8")) : { next: 1, tickets: {} };
+export const tickets: Record<string, Ticket> = saved.tickets;
+export const counter = { next: saved.next as number };
+export function saveTickets() {
   mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(PAID_FILE, JSON.stringify(paid, null, 2));
+  writeFileSync(TICKETS_FILE, JSON.stringify({ next: counter.next, tickets }, null, 2));
 }
 
 export type Result = { owner: string; text: string; tokens: number; model: string; ms: number };

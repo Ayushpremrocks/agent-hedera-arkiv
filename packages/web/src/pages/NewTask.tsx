@@ -12,7 +12,7 @@ import { useSession } from "../lib/session";
 // accepts to let someone else go first.
 const PRIORITY = {
   flexible: { icon: Leaf, title: "Flexible", blurb: "Not urgent. Your agent may let others go first, and earns HBAR when it does.", maxPay: "0", minComp: "0.02" },
-  standard: { icon: Timer, title: "Standard", blurb: "Runs in the next free slot. Pays a little to stay on time if needed.", maxPay: "0.05", minComp: "0.05" },
+  standard: { icon: Timer, title: "Standard", blurb: "Joins the queue right away. Pays a little to stay on time if needed.", maxPay: "0.05", minComp: "0.05" },
   rush: { icon: Lightning, title: "Rush", blurb: "Your agent pays to jump ahead of others so it finishes in time.", maxPay: "0.3", minComp: "0.5" },
 } as const;
 type Priority = keyof typeof PRIORITY;
@@ -156,11 +156,11 @@ export function NewTask() {
                 <dd>{startsIn !== null && startsIn > 0 ? inHuman(startsIn) : "now"}</dd>
               </dl>
               {inTime ? (
-                <p className="ok-text">The next free slot finishes in time.</p>
+                <p className="ok-text">At today's queue length it finishes in time.</p>
               ) : f.priority === "rush" ? (
-                <p>The next free slot is too late; your agent will buy an earlier one from someone who can wait.</p>
+                <p>The queue is too long for this deadline; your agent will buy an earlier place from someone who can wait.</p>
               ) : (
-                <p className="warn">The next free slot would finish late. Choose Rush to let your agent buy an earlier one.</p>
+                <p className="warn">At today's queue length it would finish late. Choose Rush to let your agent buy an earlier place.</p>
               )}
               <small className="muted">From {qd.providers} provider{qd.providers === 1 ? "" : "s"} online. Prices follow demand.</small>
             </>

@@ -40,8 +40,8 @@ export async function accountEvm(id: string): Promise<string> {
   return (await mirror<MirrorAccount>(`/accounts/${id}`)).evm_address.toLowerCase();
 }
 
-/** Slot NFT metadata: start time and job hash. Must stay under Hedera's 100-byte limit. */
-export type SlotMeta = { s: number; h: string };
+/** Ticket NFT metadata: which queue ticket it is. Minted only when a ticket is traded. */
+export type SlotMeta = { t: number };
 export const encodeSlot = (m: SlotMeta) => Buffer.from(JSON.stringify(m));
 export const decodeSlot = (b64: string): SlotMeta => JSON.parse(Buffer.from(b64, "base64").toString());
 

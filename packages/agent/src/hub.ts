@@ -55,7 +55,7 @@ export class Hub {
         tokenId: r.token_id.value,
         topicId: r.topic_id.value,
         bookingUrl: r.booking_url.value,
-        slot: Number(r.slot_seconds.value),
+        slot: Number(r.run_seconds.value), // typical run time: how long one queued ticket takes
         model: r.model.value,
         price: r.price_now.value.toString(),
         nextFree: Number(r.next_free.value),

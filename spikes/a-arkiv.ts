@@ -13,8 +13,8 @@ const offer = (serial: number, start: number, latestOk: number, price: number, l
     SlotOffer,
     {
       provider,
-      slot_serial: u64(serial),
-      slot_start: u64(start),
+      ticket: u64(serial),
+      eta: u64(start),
       latest_ok_start: u64(latestOk),
       min_price: u64(price),
       seller: need("AGENT_B_ID"),

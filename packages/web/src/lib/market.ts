@@ -10,7 +10,8 @@ const reader = arkivReader(import.meta.env.VITE_ARKIV_ACCESS_KEY ?? "");
 export type Provider = { id: string; name: string; tokenId: string; topicId: string; bookingUrl: string; slot: number; model: string; price: string; nextFree: number };
 export type LogEvent = { seq: number; ts: number; by: string; provider: string; verified: boolean; e: any };
 export type Offer = { key: string; provider: string; serial: number; start: number; latestOk: number; price: bigint; seller: string; byOwner: boolean };
-export type TradeRow = { key: string; provider: string; sellerSerial: number; buyerSerial: number; price: bigint; swapTx: string };
+export type TradeRow = { key: string; provider: string; sellerTicket: number; buyerTicket: number; price: bigint; swapTx: string };
+export type QueueEntry = { ticket: number; status: "queued" | "running"; eta: number; serial: number | null };
 
 const isAccount = (s: unknown): s is string => typeof s === "string" && /^0\.0\.\d+$/.test(s);
 async function mirror<T = any>(path: string): Promise<T> {
@@ -42,8 +43,8 @@ async function verify(body: string, by: string, sig: string) {
   return false;
 }
 
-const parsed = new Map<string, LogEvent | null>();
-/** The latest messages on each provider's topic, newest first, with signatures checked. */
+const parsed = new Map<string, LogEvent[]>();
+/** The latest events on each provider's topic, newest first, with signatures checked and batches unpacked. */
 export async function fetchLog(providers: Provider[]): Promise<LogEvent[]> {
   const all = await Promise.all(
     providers.map(async (p) => {
@@ -54,55 +55,47 @@ export async function fetchLog(providers: Provider[]): Promise<LogEvent[]> {
           if (!parsed.has(id)) {
             try {
               const env = JSON.parse(atob(m.message));
-              parsed.set(
-                id,
-                isAccount(env.by) && typeof env.body === "string"
-                  ? { seq: Number(m.sequence_number), ts: Number(m.consensus_timestamp), by: env.by, provider: p.id, verified: await verify(env.body, env.by, String(env.sig)), e: JSON.parse(env.body) }
-                  : null,
-              );
+              if (!isAccount(env.by) || typeof env.body !== "string") throw new Error("not an envelope");
+              const body = JSON.parse(env.body);
+              const verified = await verify(env.body, env.by, String(env.sig));
+              const events: any[] = body.type === "batch" && Array.isArray(body.events) ? body.events : [body];
+              // Events in one batch share a timestamp; a tiny offset keeps their order when sorted.
+              const ts = Number(m.consensus_timestamp);
+              parsed.set(id, events.map((e, i) => ({ seq: Number(m.sequence_number), ts: ts + i * 1e-6, by: env.by, provider: p.id, verified, e })));
             } catch {
-              parsed.set(id, null); // anyone can post to a topic; unreadable messages are skipped
+              parsed.set(id, []); // anyone can post to a topic; unreadable messages are skipped
             }
           }
-          return parsed.get(id);
+          return parsed.get(id)!;
         }),
       );
     }),
   );
-  return all
-    .flat()
-    .filter((x): x is LogEvent => !!x)
-    .sort((a, b) => b.ts - a.ts);
+  return all.flat(2).sort((a, b) => b.ts - a.ts);
 }
 
-/** Every slot NFT of each provider that starts in a window around now. */
-export async function fetchSlots(providers: Provider[], from: number) {
-  const rows = await Promise.all(
+/** Each provider's queue as it stands: waiting and running tickets with estimated starts. */
+export async function fetchQueues(providers: Provider[]): Promise<Record<string, QueueEntry[]>> {
+  const out: Record<string, QueueEntry[]> = {};
+  await Promise.all(
     providers.map(async (p) => {
-      const nfts = (await mirror(`/tokens/${p.tokenId}/nfts?limit=100&order=desc`)).nfts as any[];
-      return nfts.flatMap((n) => {
-        try {
-          const start = JSON.parse(atob(n.metadata)).s as number;
-          return !n.deleted && start + p.slot > from ? [{ provider: p.id, serial: n.serial_number as number, start, owner: n.account_id as string }] : [];
-        } catch {
-          return [];
-        }
-      });
+      const res = await fetch(`${p.bookingUrl}/queue`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
+      out[p.id] = res?.ok ? ((await res.json()).tickets as QueueEntry[]) : [];
     }),
   );
-  return rows.flat();
+  return out;
 }
 
 export async function fetchOffers(): Promise<Offer[]> {
-  const { entities } = await reader.select().from(SlotOffer).orderBy(asc("slot_start")).limit(100).fetch();
+  const { entities } = await reader.select().from(SlotOffer).orderBy(asc("eta")).limit(100).fetch();
   return Promise.all(
     entities.map(async (r) => {
       const seller = r.seller.value;
       return {
         key: r.$key,
         provider: r.provider.value,
-        serial: Number(r.slot_serial.value),
-        start: Number(r.slot_start.value),
+        serial: Number(r.ticket.value),
+        start: Number(r.eta.value),
         latestOk: Number(r.latest_ok_start.value),
         price: r.min_price.value,
         seller,
@@ -117,8 +110,8 @@ export async function fetchTrades(): Promise<TradeRow[]> {
   return entities.map((r) => ({
     key: r.$key,
     provider: r.provider.value,
-    sellerSerial: Number(r.seller_serial.value),
-    buyerSerial: Number(r.buyer_serial.value),
+    sellerTicket: Number(r.seller_ticket.value),
+    buyerTicket: Number(r.buyer_ticket.value),
     price: r.price.value,
     swapTx: r.swap_tx.value,
   }));

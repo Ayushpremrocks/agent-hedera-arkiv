@@ -68,7 +68,7 @@ export function TaskDetail() {
     ...(t.rushPaid ? [{ text: `Moved ahead in the queue: paid another agent ${hbar(t.rushPaid)} to finish on time`, state: "done" as const }] : []),
     {
       when: t.start ?? undefined,
-      text: t.status === "queued" ? `Scheduled to start at ${t.start ? clock(t.start) : "the next free slot"}` : "Ran on the provider's GPU",
+      text: t.status === "queued" ? `Scheduled to start at ${t.start ? clock(t.start) : "its turn in the queue"}` : "Ran on the provider's GPU",
       state: t.status === "queued" ? "now" : "done",
     },
     t.status === "failed"
@@ -171,10 +171,15 @@ export function TaskDetail() {
               )}
               {p && t.serial !== null && (
                 <li>
-                  GPU time was held as NFT{" "}
-                  <a href={`${hashscan("token", p.tokenId)}/${t.serial}`} target="_blank" rel="noopener">
-                    {p.tokenId} #{t.serial}
-                  </a>
+                  {p.name} queue ticket #{t.serial}
+                  {t.rushPaid ? (
+                    <>
+                      , traded as an NFT of{" "}
+                      <a href={hashscan("token", p.tokenId)} target="_blank" rel="noopener">
+                        {p.tokenId}
+                      </a>
+                    </>
+                  ) : null}
                 </li>
               )}
             </ul>

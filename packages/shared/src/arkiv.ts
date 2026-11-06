@@ -15,19 +15,21 @@ export const ProviderProfile = defineSchema("qy_provider", {
   name: str(),
   token_id: str(),
   topic_id: str(),
-  slot_seconds: u64(),
+  run_seconds: u64(), // typical job run time, for estimating when a queued ticket starts
   booking_url: str(),
   model: str().indexed(),
   workers: u64(),
   price_now: u64().indexed(), // current booking price, tinybars
-  next_free: u64().indexed(), // earliest start with a free worker, unix seconds
+  next_free: u64().indexed(), // estimated start of a ticket booked now, unix seconds
 });
 
+// An agent offering its place in a provider's queue. `eta` is the provider's estimate of when that
+// ticket starts; the buyer gives back its own (later) ticket plus the price.
 export const SlotOffer = defineSchema("qy_offer", {
   provider: str().indexed(),
-  slot_serial: u64().indexed(),
-  slot_start: u64().indexed(),
-  latest_ok_start: u64().indexed(), // seller's deadline minus one slot length
+  ticket: u64().indexed(),
+  eta: u64().indexed(),
+  latest_ok_start: u64().indexed(), // latest start the seller can take in exchange and still meet its deadlines
   min_price: u64().indexed(),
   seller: str(), // seller's Hedera account id
   endpoint: str(), // seller's x402 swap endpoint
@@ -36,8 +38,8 @@ export const SlotOffer = defineSchema("qy_offer", {
 
 export const Trade = defineSchema("qy_trade", {
   provider: str().indexed(),
-  seller_serial: u64().indexed(),
-  buyer_serial: u64().indexed(),
+  seller_ticket: u64().indexed(),
+  buyer_ticket: u64().indexed(),
   price: u64().indexed(),
   swap_tx: str(), // one atomic transaction: both slots and the HBAR price
   hcs_seq: str(),
@@ -63,8 +65,8 @@ export type Want = { myStart: number; myLatest: number; notBefore: number; budge
 export function offerFilter(provider: string, w: Want) {
   return and(
     eq("provider", provider),
-    lte("slot_start", u64(Math.min(w.myStart - 1, w.myLatest))),
-    gte("slot_start", u64(w.notBefore)),
+    lte("eta", u64(Math.min(w.myStart - 1, w.myLatest))),
+    gte("eta", u64(w.notBefore)),
     gte("latest_ok_start", u64(w.myStart)),
     lte("min_price", u64(w.budget)),
   );
@@ -97,7 +99,7 @@ export const TaskRecord = defineSchema("qy_task", {
   status: str().indexed(), // queued | running | done | failed
   deadline: u64().indexed(),
   provider: str().indexed(),
-  serial: u64(),
+  serial: u64(), // queue ticket
   result_hash: str(), // sha256 of the result, matching the provider's signed `done` event
   on_time: str(), // "yes" | "no" | ""
   finished_at: u64(),

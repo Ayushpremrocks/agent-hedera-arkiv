@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Notice, Section, Stats, Who } from "../components/ui";
 import { clock, hashscan, hbar, inHuman, shortClock } from "../lib/format";
-import { type LogEvent, type Provider, fetchLog, fetchOffers, fetchSlots, fetchTrades } from "../lib/market";
+import { type LogEvent, type Provider, type QueueEntry, fetchLog, fetchOffers, fetchQueues, fetchTrades } from "../lib/market";
 
 declare const __AGENT_NAMES__: Record<string, string>;
 const PAST = 120;
@@ -34,7 +34,7 @@ export function Market() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => fetch("/api/market").then((r) => r.json()).then((d) => d.providers as Provider[]), refetchInterval: 15_000 });
   const list = providers.data ?? [];
   const log = useQuery({ queryKey: ["log", list.map((p) => p.id).join()], queryFn: () => fetchLog(list), enabled: list.length > 0, refetchInterval: 6000 });
-  const slots = useQuery({ queryKey: ["slots", list.map((p) => p.id).join()], queryFn: () => fetchSlots(list, now() - PAST), enabled: list.length > 0, refetchInterval: 6000 });
+  const queues = useQuery({ queryKey: ["queues", list.map((p) => p.id).join()], queryFn: () => fetchQueues(list), enabled: list.length > 0, refetchInterval: 4000 });
   const offers = useQuery({ queryKey: ["offers"], queryFn: fetchOffers, refetchInterval: 6000 });
   const trades = useQuery({ queryKey: ["trades"], queryFn: fetchTrades, refetchInterval: 10_000 });
 
@@ -46,6 +46,7 @@ export function Market() {
   }, [list]);
   const events = log.data ?? [];
   const verified = events.filter((x) => x.verified);
+  const slots = useMemo(() => ticketsOf(list, queues.data ?? {}, verified), [list, queues.data, verified]);
 
   const delivered = verified.filter((x) => x.e.type === "delivered");
   const tradeEvents = verified.filter((x) => x.e.type === "trade" && x.by === x.e.seller);
@@ -70,12 +71,12 @@ export function Market() {
         ]}
       />
       <Providers list={list} />
-      <Section title="Schedule" intro="Each block is one slot on a provider's GPU, colored by who holds it. Arcs join slots that swapped owners.">
-        <Schedule providers={list} slots={slots.data ?? []} events={verified} names={names} />
+      <Section title="Queues" intro="Each block is one queue ticket on a provider's GPU, colored by who holds it: recent runs on the left, estimated starts on the right. Arcs join tickets that swapped places.">
+        <Schedule providers={list} slots={slots} events={verified} names={names} />
       </Section>
       <div className="pair">
         <Offers offers={offers.data ?? []} providers={list} names={names} />
-        <BuyerQuery providers={list} slots={slots.data ?? []} names={names} />
+        <BuyerQuery providers={list} slots={slots} names={names} />
       </div>
       <div className="pair">
         <Trades trades={trades.data ?? []} events={verified} providers={list} names={names} />
@@ -95,7 +96,7 @@ function Providers({ list }: { list: Provider[] }) {
             <th>Provider</th>
             <th>Model</th>
             <th className="num">Price now</th>
-            <th>Next free slot</th>
+            <th>Next start</th>
             <th>Log</th>
           </tr>
         </thead>
@@ -130,10 +131,36 @@ function Providers({ list }: { list: Provider[] }) {
   );
 }
 
+// `serial` here is the queue ticket number; `start` is when it ran, or the provider's estimate.
 type Slot = { provider: string; serial: number; start: number; owner: string };
+
+/** Tickets to draw: recent runs from the signed log, plus what's waiting in each queue now. Holders come from the log too. */
+function ticketsOf(providers: Provider[], queues: Record<string, QueueEntry[]>, events: LogEvent[]): Slot[] {
+  const out: Slot[] = [];
+  for (const p of providers) {
+    const mine = events.filter((x) => x.by === p.id || x.provider === p.id).slice().reverse(); // oldest first
+    const holder = new Map<number, string>();
+    for (const { e } of mine) {
+      if (e.type === "booked") holder.set(e.ticket, e.owner);
+      if (e.type === "trade") (holder.set(e.sellerTicket, e.buyer), holder.set(e.buyerTicket, e.seller));
+    }
+    const seen = new Set<number>();
+    for (const q of queues[p.id] ?? []) {
+      seen.add(q.ticket);
+      out.push({ provider: p.id, serial: q.ticket, start: q.eta, owner: holder.get(q.ticket) ?? "?" });
+    }
+    for (const x of mine)
+      if (x.by === p.id && x.e.type === "done" && !seen.has(x.e.ticket)) {
+        seen.add(x.e.ticket);
+        out.push({ provider: p.id, serial: x.e.ticket, start: x.ts - x.e.ms / 1000, owner: x.e.owner });
+      }
+  }
+  return out;
+}
+
 function statusOf(events: LogEvent[], p: Provider, s: Slot) {
-  const done = events.find((x) => x.by === p.id && x.e.type === "done" && x.e.serial === s.serial);
-  const dispatch = events.find((x) => x.by === p.id && x.e.type === "dispatch" && x.e.serial === s.serial);
+  const done = events.find((x) => x.by === p.id && x.e.type === "done" && x.e.ticket === s.serial);
+  const dispatch = events.find((x) => x.by === p.id && x.e.type === "dispatch" && x.e.ticket === s.serial);
   if (done) return done.e.ok ? { kind: "ran", text: `ran ${(done.e.ms / 1000).toFixed(1)}s`, owner: done.e.owner } : { kind: "killed", text: String(done.e.result).startsWith("timeout") ? "killed at end" : "failed", owner: done.e.owner };
   if (dispatch) return dispatch.e.jobHash ? { kind: "running", text: "running", owner: dispatch.e.owner } : { kind: "idle", text: "no job", owner: dispatch.e.owner };
   if (s.start > now()) return { kind: "waiting", text: "waiting", owner: s.owner };
@@ -147,14 +174,19 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
   const W = 1000, G = 110, LANE = 50, BLOCK = 38, TOP = 52, GAP = 18;
   const x = (u: number) => G + ((u - t0) / (t1 - t0)) * (W - G - 8);
 
-  // One band of lanes per provider; within a band, slots at the same start stack into lanes.
+  // One band of lanes per provider; tickets that overlap in time go to separate lanes (one per worker, roughly).
   let y = TOP;
   const bands = providers.map((p) => {
     const visible = slots.filter((s) => s.provider === p.id && s.start + p.slot > t0 && s.start < t1).sort((a, b) => a.start - b.start || a.serial - b.serial);
-    const byStart = new Map<number, Slot[]>();
-    for (const s of visible) byStart.set(s.start, [...(byStart.get(s.start) ?? []), s]);
-    const lanes = Math.max(1, ...[...byStart.values()].map((l) => l.length));
-    const band = { p, byStart, lanes, y };
+    const ends: number[] = [];
+    const placed = visible.map((s) => {
+      let lane = ends.findIndex((end) => end <= s.start);
+      if (lane < 0) lane = ends.push(0) - 1;
+      ends[lane] = s.start + p.slot;
+      return { s, lane };
+    });
+    const lanes = Math.max(1, ends.length);
+    const band = { p, placed, lanes, y };
     y += lanes * LANE + GAP;
     return band;
   });
@@ -163,7 +195,7 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
 
   return (
     <div className="chart-wrap">
-      <svg id="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Slot schedule across providers">
+      <svg id="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Queue tickets across providers">
         {Array.from({ length: Math.ceil((t1 - t0) / 60) + 1 }, (_, i) => Math.ceil(t0 / 60) * 60 + i * 60)
           .filter((u) => u < t1)
           .map((u) => (
@@ -174,7 +206,7 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
               </text>
             </g>
           ))}
-        {bands.map(({ p, byStart, lanes, y: by }) => (
+        {bands.map(({ p, placed, lanes, y: by }) => (
           <g key={p.id}>
             <text className="band-label" x={G - 10} y={by + 16} textAnchor="end">
               {p.name}
@@ -185,8 +217,8 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
             {Array.from({ length: lanes }, (_, i) => (
               <rect key={i} className="lane" x={G} y={by + i * LANE} width={W - G - 8} height={BLOCK} />
             ))}
-            {[...byStart.entries()].flatMap(([start, list]) =>
-              list.map((s, i) => {
+            {placed.map(({ s, lane: i }) => {
+                const start = s.start;
                 const st = statusOf(events, p, s);
                 const bx = Math.max(G, x(start) + 1);
                 const bw = Math.min(x(start + p.slot) - 1, W - 8) - bx;
@@ -195,7 +227,7 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
                 pos.set(`${p.id}:${s.serial}`, { cx: bx + bw / 2, y: sy });
                 return (
                   <g key={s.serial} className={`block ${st.kind}`} style={{ ["--c" as any]: colorOf(st.owner) }}>
-                    <title>{`${p.name} slot #${s.serial}, ${clock(s.start)}, held by ${names[st.owner] ?? st.owner}: ${st.text}`}</title>
+                    <title>{`${p.name} ticket #${s.serial}, ${clock(s.start)}, held by ${names[st.owner] ?? st.owner}: ${st.text}`}</title>
                     <rect x={bx} y={sy} width={bw} height={BLOCK} rx={3} />
                     {st.kind === "killed" && <rect className="hatch" x={bx} y={sy} width={bw} height={BLOCK} rx={3} />}
                     {bw > 40 && (
@@ -210,15 +242,14 @@ function Schedule({ providers, slots, events, names }: { providers: Provider[]; 
                     )}
                   </g>
                 );
-              }),
-            )}
+              })}
           </g>
         ))}
         {events
           .filter((ev) => ev.e.type === "trade" && ev.by === ev.e.seller)
           .map((ev) => {
-            const a = pos.get(`${ev.provider}:${ev.e.sellerSerial}`);
-            const b = pos.get(`${ev.provider}:${ev.e.buyerSerial}`);
+            const a = pos.get(`${ev.provider}:${ev.e.sellerTicket}`);
+            const b = pos.get(`${ev.provider}:${ev.e.buyerTicket}`);
             if (!a || !b) return null;
             const apex = Math.min(a.y, b.y) - 34;
             const mx = (a.cx + b.cx) / 2;
@@ -250,13 +281,13 @@ function Offers({ offers, providers, names }: { offers: Awaited<ReturnType<typeo
   const live = offers.filter((o) => o.start > t);
   const pname = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
   return (
-    <Section title="Slots offered for swaps" intro="Live qy_offer entities on Arkiv. Each disappears on its own 15 seconds before its slot starts.">
+    <Section title="Places offered for swaps" intro="Live qy_offer entities on Arkiv: agents with time to spare offering their place in a queue. Each expires on its own before the ticket starts.">
       {live.length ? (
         <table>
           <thead>
             <tr>
-              <th>Slot</th>
-              <th>Starts</th>
+              <th>Ticket</th>
+              <th>Starts (est.)</th>
               <th>Seller</th>
               <th className="num">Asks</th>
               <th>Check</th>
@@ -281,7 +312,7 @@ function Offers({ offers, providers, names }: { offers: Awaited<ReturnType<typeo
           </tbody>
         </table>
       ) : (
-        <p className="empty">Nothing offered right now. Agents with time to spare offer their slots here.</p>
+        <p className="empty">Nothing offered right now. Agents with time to spare offer their place in line here.</p>
       )}
     </Section>
   );
@@ -306,10 +337,10 @@ function BuyerQuery({ providers, slots, names }: { providers: Provider[]; slots:
       const { entities } = await findOffers(arkivReader(import.meta.env.VITE_ARKIV_ACCESS_KEY ?? ""), provider.id, want);
       setResult(
         entities.length
-          ? `${entities.length} offer${entities.length > 1 ? "s" : ""} match, cheapest first: ${entities.map((r) => `#${r.slot_serial.value} from ${names[r.seller.value] ?? r.seller.value} at ${hbar(r.min_price.value)}`).join(", ")}.`
+          ? `${entities.length} offer${entities.length > 1 ? "s" : ""} match, cheapest first: ${entities.map((r) => `#${r.ticket.value} from ${names[r.seller.value] ?? r.seller.value} at ${hbar(r.min_price.value)}`).join(", ")}.`
           : want.myLatest >= want.myStart
-            ? "That slot already meets the deadline; nothing earlier is needed."
-            : "No offer matches: nobody can take the later slot, or every price is over budget.",
+            ? "That ticket already meets the deadline; nothing earlier is needed."
+            : "No offer matches: nobody can take the later ticket, or every price is over budget.",
       );
     } catch (err) {
       setResult(`Arkiv didn't answer: ${(err as Error).message}`);
@@ -320,7 +351,7 @@ function BuyerQuery({ providers, slots, names }: { providers: Provider[]; slots:
     <Section title="Run the buyer's query" intro="The exact filter an urgent agent sends to Arkiv. Both parties' deadlines are checked inside the query." className="query">
       <form onSubmit={run}>
         <label>
-          Slot you hold
+          Ticket you hold
           <select value={pick} onChange={(e) => setPick(e.target.value)}>
             {upcoming.length ? (
               upcoming.map((s) => (
@@ -329,7 +360,7 @@ function BuyerQuery({ providers, slots, names }: { providers: Provider[]; slots:
                 </option>
               ))
             ) : (
-              <option>No upcoming slots</option>
+              <option>No waiting tickets</option>
             )}
           </select>
         </label>
@@ -349,7 +380,7 @@ function BuyerQuery({ providers, slots, names }: { providers: Provider[]; slots:
           Run query on Arkiv
         </button>
       </form>
-      <pre className="query-text">{want && provider ? render(offerFilter(provider.id, want)) : "Book a slot first: the query starts from a slot you hold."}</pre>
+      <pre className="query-text">{want && provider ? render(offerFilter(provider.id, want)) : "Book a task first: the query starts from a ticket you hold."}</pre>
       {result && <p role="status">{result}</p>}
     </Section>
   );
@@ -362,13 +393,13 @@ function Trades({ trades, events, providers, names }: { trades: Awaited<ReturnTy
     .filter((r) => r.ev)
     .sort((a, b) => b.ev!.ts - a.ev!.ts);
   return (
-    <Section title="Swaps" intro="qy_trade records on Arkiv, each matched to the seller's signed message on Hedera. Slots and payment moved in one transaction.">
+    <Section title="Swaps" intro="qy_trade records on Arkiv, each matched to the seller's signed message on Hedera. Both ticket NFTs and the payment moved in one transaction.">
       {rows.length ? (
         <table>
           <thead>
             <tr>
               <th>Time</th>
-              <th>Slots</th>
+              <th>Tickets</th>
               <th>Seller to buyer</th>
               <th className="num">Price</th>
               <th>Proof</th>
@@ -379,7 +410,7 @@ function Trades({ trades, events, providers, names }: { trades: Awaited<ReturnTy
               <tr key={t.key}>
                 <td>{clock(ev!.ts)}</td>
                 <td>
-                  {providers.find((p) => p.id === t.provider)?.name} #{t.sellerSerial} for #{t.buyerSerial}
+                  {providers.find((p) => p.id === t.provider)?.name} #{t.sellerTicket} for #{t.buyerTicket}
                 </td>
                 <td>
                   <Who id={ev!.e.seller} names={names} color={colorOf(ev!.e.seller)} /> to <Who id={ev!.e.buyer} names={names} color={colorOf(ev!.e.buyer)} />
@@ -406,13 +437,15 @@ function describe(ev: LogEvent, names: Record<string, string>) {
   const n = (id: unknown) => (typeof id === "string" ? (names[id] ?? id) : "?");
   switch (e.type) {
     case "booked":
-      return `${n(e.owner)} booked slot #${e.serial} for ${clock(e.start)}${e.price ? `, paid ${hbar(e.price)}` : ""}`;
+      return `${n(e.owner)} booked ticket #${e.ticket}${e.price ? `, paid ${hbar(e.price)}` : ""}`;
     case "dispatch":
-      return e.jobHash ? `Slot #${e.serial} started ${n(e.owner)}'s job` : `Slot #${e.serial} started with no job`;
+      return e.jobHash ? `Ticket #${e.ticket} started ${n(e.owner)}'s job` : `Ticket #${e.ticket} started with no job`;
     case "done":
-      return e.ok ? `Slot #${e.serial} finished ${n(e.owner)}'s job in ${(e.ms / 1000).toFixed(1)}s${e.tokens ? `, ${e.tokens} tokens` : ""}` : `Slot #${e.serial}: ${n(e.owner)}'s job ${String(e.result).startsWith("timeout") ? "was cut off at slot end" : "failed"}`;
+      return e.ok ? `Ticket #${e.ticket} finished ${n(e.owner)}'s job in ${(e.ms / 1000).toFixed(1)}s${e.tokens ? `, ${e.tokens} tokens` : ""}` : `Ticket #${e.ticket}: ${n(e.owner)}'s job ${String(e.result).startsWith("timeout") ? "hit the run-time limit" : "failed"}`;
+    case "tokenized":
+      return `Ticket #${e.ticket} became NFT #${e.serial} for trading`;
     case "trade":
-      return `${n(e.seller)} gave slot #${e.sellerSerial} to ${n(e.buyer)} for ${hbar(e.price)} and took #${e.buyerSerial}`;
+      return `${n(e.seller)} gave ticket #${e.sellerTicket} to ${n(e.buyer)} for ${hbar(e.price)} and took #${e.buyerTicket}`;
     case "refund":
       return `Provider refunded ${hbar(e.amount)} to ${n(e.buyer)}`;
     case "delivered":

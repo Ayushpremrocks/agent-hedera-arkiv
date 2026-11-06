@@ -93,10 +93,10 @@ type JobState = {
 };
 type Listing = { key: `0x${string}`; latestOk: number; price: string };
 export type State = {
-  v: 3;
-  slots: Record<string, number>; // "provider:serial" -> start, slots held that haven't run
+  v: 4;
+  slots: Record<string, number>; // "provider:ticket" -> estimated start, queue tickets held that haven't run
   jobs: Record<string, JobState>; // jobHash -> state
-  listings: Record<string, Listing>; // "provider:serial" -> live Arkiv offer
+  listings: Record<string, Listing>; // "provider:ticket" -> live Arkiv offer
   stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string; refunded?: string };
 };
 export type TaskSpec = { task: string; input?: string; label: string; deadline: number; maxTokens?: number; maxPay: bigint; minComp: bigint };
@@ -128,7 +128,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   if (opts.dir) mkdirSync(`${opts.dir}/outputs`, { recursive: true });
   const loaded = opts.fresh ? null : await opts.store.load();
   const state: State =
-    loaded?.v === 3 ? loaded : { v: 3, slots: {}, jobs: {}, listings: {}, stats: { booked: 0, met: 0, late: 0, failed: 0, bought: 0, sold: 0, spent: "0", earned: "0" } };
+    loaded?.v === 4 ? loaded : { v: 4, slots: {}, jobs: {}, listings: {}, stats: { booked: 0, met: 0, late: 0, failed: 0, bought: 0, sold: 0, spent: "0", earned: "0" } };
   const save = () => opts.store.save(state);
   const emit = (e: TaskEvent) => {
     try {
@@ -147,11 +147,11 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     }
   }
 
-  /** One provider's upcoming slots and pending deadlines: the inputs to every decision there. */
+  /** One provider's queued tickets (with estimated starts) and pending deadlines: the inputs to every decision there. */
   function schedule(provider: string) {
     const slots = Object.entries(state.slots)
       .map(([key, start]) => ({ ...splitKey(key), start }))
-      .filter((s) => s.provider === provider && s.start > now());
+      .filter((s) => s.provider === provider);
     const deadlines = Object.values(state.jobs)
       .filter((j) => j.provider === provider && j.status === "queued")
       .map((j) => j.deadline);
@@ -161,6 +161,30 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   const open = () => Object.values(state.jobs).filter((j) => j.status === "queued" || j.status === "running");
   const activeProviders = () => new Set([...Object.keys(state.slots).map((k) => splitKey(k).provider), ...open().map((j) => j.provider)]);
   for (const id of activeProviders()) if (hub.known(id)) hub.track(hub.known(id)!);
+
+  type QueueEntry = { ticket: number; status: string; eta: number; serial: number | null };
+  /** A provider's queue as it stands: estimated starts, and which tickets are NFTs (tradeable). */
+  async function queueOf(p: Provider): Promise<Map<number, QueueEntry>> {
+    const res = await fetch(`${p.bookingUrl}/queue`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`${p.name} queue: ${res.status}`);
+    const body = (await res.json()) as { tickets: QueueEntry[] };
+    return new Map(body.tickets.map((t) => [t.ticket, t]));
+  }
+  /** Estimated starts move as the queue drains: refresh the ones this agent holds. */
+  async function refreshEtas() {
+    for (const provider of activeProviders()) {
+      const p = hub.known(provider);
+      if (!p) continue;
+      const q = await queueOf(p).catch(() => null);
+      if (!q) continue;
+      for (const key of Object.keys(state.slots)) {
+        const { provider: pid, serial: ticket } = splitKey(key);
+        const entry = q.get(ticket);
+        if (pid === provider && entry?.status === "queued") state.slots[key] = entry.eta;
+      }
+    }
+    save();
+  }
 
   /** Budget for buying an earlier slot: the most any at-risk job's owner will pay to be on time. */
   function buyBudget(provider: string, starts: number[], deadlines: number[]) {
@@ -206,18 +230,18 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         emit({ kind: "failed", jobHash: e.jobHash, reason: "expired before any slot ran it" });
       }
     } else if (e.type === "dispatch") {
-      delete state.slots[slotKey(provider, e.serial)];
+      delete state.slots[slotKey(provider, e.ticket)];
       const job = e.jobHash ? state.jobs[e.jobHash] : undefined;
       if (job) {
-        Object.assign(job, { status: "running", serial: e.serial });
-        emit({ kind: "running", jobHash: e.jobHash!, serial: e.serial });
+        Object.assign(job, { status: "running", serial: e.ticket });
+        emit({ kind: "running", jobHash: e.jobHash!, serial: e.ticket });
       }
     } else if (state.jobs[e.jobHash]) {
       if (e.ok) toDeliver.push({ provider, ev });
       else {
         Object.assign(state.jobs[e.jobHash], { status: "failed" });
         state.stats.failed++;
-        say(`job "${state.jobs[e.jobHash].label}" failed in ${known(provider).name} slot #${e.serial}: ${e.result}`);
+        say(`job "${state.jobs[e.jobHash].label}" failed on ${known(provider).name} ticket #${e.ticket}: ${e.result}`);
         emit({ kind: "failed", jobHash: e.jobHash, reason: e.result });
       }
     }
@@ -240,20 +264,20 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       file = `outputs/${new Date(done.ts * 1000).toISOString().replace(/[:.]/g, "-")}-${job.label.replace(/[^a-z0-9]+/gi, "-").slice(0, 60)}.md`;
       writeFileSync(
       `${opts.dir}/${file}`,
-      `# ${job.label}\n\nRan on ${p.name} in slot #${done.e.serial}, finished ${new Date(done.ts * 1000).toISOString()}, ` +
+      `# ${job.label}\n\nRan on ${p.name} as ticket #${done.e.ticket}, finished ${new Date(done.ts * 1000).toISOString()}, ` +
         `deadline ${new Date(job.deadline * 1000).toISOString()} (${met ? "on time" : `late by ${done.ts - job.deadline}s`}). ` +
         `${res.body.tokens} tokens from ${res.body.model}. Result sha256 ${done.e.resultHash}, checked against HCS.\n\n${res.body.text}\n`,
       );
     }
-    emit({ kind: "done", jobHash: hash, serial: done.e.serial, result: res.body.text, resultHash: done.e.resultHash!, tokens: res.body.tokens, model: res.body.model, finishedAt: done.ts, onTime: met });
+    emit({ kind: "done", jobHash: hash, serial: done.e.ticket, result: res.body.text, resultHash: done.e.resultHash!, tokens: res.body.tokens, model: res.body.model, finishedAt: done.ts, onTime: met });
     await locked(async () => {
       Object.assign(job, { status: "done", met, file });
       if (met) state.stats.met++;
       else state.stats.late++;
       save();
     });
-    say(`${met ? "ON TIME" : "LATE"} "${job.label}" (${p.name} #${done.e.serial})`);
-    await postEvent(client, p.topicId, me.id, me.key, { type: "delivered", jobHash: hash, serial: done.e.serial, label: job.fromUser ? "" : job.label, deadline: job.deadline, finishedAt: done.ts, met }).catch(
+    say(`${met ? "ON TIME" : "LATE"} "${job.label}" (${p.name} ticket #${done.e.ticket})`);
+    await postEvent(client, p.topicId, me.id, me.key, { type: "delivered", jobHash: hash, ticket: done.e.ticket, label: job.fromUser ? "" : job.label, deadline: job.deadline, finishedAt: done.ts, met }).catch(
       (e) => say(`HCS delivered: ${e.message}`),
     );
   }
@@ -262,8 +286,8 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   async function market(): Promise<Market> {
     const rows = (await reader.select().from(SlotOffer).limit(100).fetch()).entities;
     const offers = rows.map((r) => ({
-      serial: Number(r.slot_serial.value),
-      start: Number(r.slot_start.value),
+      serial: Number(r.ticket.value),
+      start: Number(r.eta.value),
       latestOk: Number(r.latest_ok_start.value),
       price: r.min_price.value,
       seller: r.seller.value,
@@ -297,7 +321,9 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
           .slice(0, 3)
           .map(async (c) => {
             const q = await postPaid(`${c.bookingUrl}/book`, request, undefined, 0, 5000).catch(() => null);
-            return q?.status === 402 && q.body.price ? { ...c, price: String(q.body.price), nextFree: Number(q.body.nextFree ?? c.nextFree) } : null;
+            return q?.status === 402 && q.body.price
+              ? { ...c, price: String(q.body.price), nextFree: Number(q.body.nextFree ?? c.nextFree), slot: Number(q.body.runSeconds ?? c.slot) }
+              : null;
           }),
       )
     ).filter((c): c is Provider => !!c && BigInt(c.price) <= maxBooking);
@@ -326,7 +352,8 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       say(`could not book "${t.label}" at ${p.name}: ${booked.status} ${booked.body.error}`);
     }
     if (booked.status !== 200 || !p) return { error: String(booked.body.error) };
-    const { serial, start, price } = booked.body as { serial: number; start: number; price: string };
+    // A ticket is a place in the queue; `eta` is the provider's estimate of when it starts.
+    const { ticket: serial, eta: start, price } = booked.body as { ticket: number; eta: number; price: string };
     const chosen = p;
     hub.track(chosen);
     await locked(async () => {
@@ -347,7 +374,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     });
     emit({ kind: "booked", jobHash: hash, label: t.label, deadline: job.deadline, provider: chosen.id, providerName: chosen.name, serial, start, price, fromUser: !!terms.fromUser });
     const fits = start + chosen.slot <= job.deadline;
-    say(`booked ${chosen.name} #${serial} (${chosen.model}) for "${t.label}" at ${price} tinybars, starts in ${start - now()}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
+    say(`booked ${chosen.name} ticket #${serial} (${chosen.model}) for "${t.label}" at ${price} tinybars, starts in ~${start - now()}s, due in ${job.deadline - now()}s${fits ? "" : " (too late on its own)"}`);
     return { provider: chosen.id, providerName: chosen.name, jobHash: hash, serial, start, price, slotSeconds: chosen.slot };
   }
 
@@ -381,44 +408,65 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
             .filter(([, j]) => j.provider === provider && j.status === "queued")
             .sort(([, a], [, b]) => a.deadline - b.deadline)[0];
           if (urgent) emit({ kind: "moved", jobHash: urgent[0], serial: sellerSerial, start, paid: price });
-          say(`BOUGHT ${p.name} #${sellerSerial} (starts in ${start - now()}s) from ${names[row.seller.value] ?? row.seller.value} for ${price} tinybars, gave #${give.serial}: ${hashscan("transaction", swapTx)}`);
+          say(`BOUGHT ${p.name} ticket #${sellerSerial} (starts in ~${start - now()}s) from ${names[row.seller.value] ?? row.seller.value} for ${price} tinybars, gave #${give.serial}: ${hashscan("transaction", swapTx)}`);
           bought = true;
           break;
         } catch (e) {
-          say(`skipped offer ${p.name} #${row.slot_serial.value}: ${(e as Error).message}`);
+          say(`skipped offer ${p.name} ticket #${row.ticket.value}: ${(e as Error).message}`);
         }
       }
       // Say it once per shortfall, not every tick.
       if (!bought && !candidates.length && lastShortfall.get(provider) !== plan.latestStart) {
         lastShortfall.set(provider, plan.latestStart);
-        say(`behind schedule at ${p.name}: need a slot starting by ${plan.latestStart - now()}s from now, none offered within ${budget} tinybars`);
+        say(`behind schedule at ${p.name}: need a ticket starting by ${plan.latestStart - now()}s from now, none offered within ${budget} tinybars`);
       }
     }
   }
 
-  async function take(p: Provider, row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveSerial: number, latestStart: number, budget: bigint) {
+  /**
+   * Buy the seller's queue ticket in exchange for ours. Tickets aren't NFTs until traded, so first we
+   * pay the provider to tokenize both (only traded tickets ever cost a mint), then the same atomic
+   * swap as always: both NFTs and the price in one transaction.
+   */
+  async function take(p: Provider, row: Awaited<ReturnType<typeof findOffers>>["entities"][number], giveTicket: number, latestStart: number, budget: bigint) {
     const seller = row.seller.value;
     const endpoint = row.endpoint.value;
-    const sellerSerial = Number(row.slot_serial.value);
-    // Arkiv rows are claims: check who wrote it and what Hedera says before signing anything.
+    const sellerTicket = Number(row.ticket.value);
+    // Arkiv rows are claims: check who wrote it and what the provider says before paying anything.
     if (row.$owner.toLowerCase() !== (await hub.evmOf(seller))) throw new Error("offer was not written by the seller it names");
-    const slot = await slotInfo(client, p.tokenId, sellerSerial);
-    if (slot.owner !== seller) throw new Error("seller no longer holds it");
-    if (slot.meta.s !== Number(row.slot_start.value) || slot.meta.s > latestStart) throw new Error("slot start on Hedera doesn't match the offer");
+    const before = await queueOf(p);
+    const theirs = before.get(sellerTicket);
+    if (theirs?.status !== "queued" || theirs.eta > latestStart) throw new Error("that ticket no longer starts early enough");
 
-    const ask = await postPaid(endpoint, { buyer: me.id, buyerSerial: giveSerial });
-    if (ask.status !== 402) throw new Error(`seller refused (${ask.status}): ${ask.body.error}`);
-    const quote = ask.body.accepts?.[0];
-    if (quote?.scheme !== "qy-atomic-swap" || quote.payTo !== seller || quote.extra?.sellerSerial !== sellerSerial || quote.extra?.tokenId !== p.tokenId)
+    // Ask the seller first: if it refuses, nothing is tokenized and nothing is paid.
+    const ask = await postPaid(endpoint, { buyer: me.id, buyerTicket: giveTicket });
+    if (ask.status !== 402 && ask.status !== 409) throw new Error(`seller refused (${ask.status}): ${ask.body.error}`);
+    const tickets = [sellerTicket, giveTicket];
+    const tok = await postPaid(
+      `${p.bookingUrl}/tickets/tokenize`,
+      { tickets, ...signRequest("tokenize", me.id, me.key, tickets.join(",")) },
+      payer,
+    ).catch((e) => ({ status: 0, body: { error: e.message } }));
+    if (tok.status !== 200) throw new Error(`could not tokenize the tickets (${tok.status}): ${tok.body.error}`);
+    if (tok.body.price && tok.body.price !== "0") addTo("spent", tok.body.price);
+    const sellerSerial = Number(tok.body.serials[sellerTicket]);
+    const buyerSerial = Number(tok.body.serials[giveTicket]);
+    const slot = await slotInfo(client, p.tokenId, sellerSerial);
+    if (slot.owner !== seller || slot.meta.t !== sellerTicket) throw new Error("the seller doesn't hold that ticket on Hedera");
+
+    const quoteRes = ask.status === 402 ? ask : await postPaid(endpoint, { buyer: me.id, buyerTicket: giveTicket });
+    if (quoteRes.status !== 402) throw new Error(`seller refused (${quoteRes.status}): ${quoteRes.body.error}`);
+    const quote = quoteRes.body.accepts?.[0];
+    if (quote?.scheme !== "qy-atomic-swap" || quote.payTo !== seller || quote.extra?.sellerTicket !== sellerTicket || quote.extra?.tokenId !== p.tokenId)
       throw new Error("seller quoted different terms");
     const price = BigInt(quote.amount);
     if (!withinBudget(price, budget)) throw new Error(`price ${price} over budget ${budget}`);
 
     await fund(price + 10_000_000n); // the price, plus the swap's network fee
-    const tx = await buildSwap(client, { tokenId: p.tokenId, seller, sellerSerial, buyer: me.id, buyerSerial: giveSerial, price }).sign(parseKey(me.key));
-    const res = await postPaid(endpoint, { buyer: me.id, buyerSerial: giveSerial, tx: Buffer.from(tx.toBytes()).toString("base64") });
+    const tx = await buildSwap(client, { tokenId: p.tokenId, seller, sellerSerial, buyer: me.id, buyerSerial, price }).sign(parseKey(me.key));
+    const res = await postPaid(endpoint, { buyer: me.id, buyerTicket: giveTicket, tx: Buffer.from(tx.toBytes()).toString("base64") });
     if (res.status !== 200) throw new Error(`swap failed (${res.status}): ${res.body.error}`);
-    return { sellerSerial, start: slot.meta.s, price: price.toString(), swapTx: res.body.swapTx as string };
+    return { sellerSerial: sellerTicket, start: theirs.eta, price: price.toString(), swapTx: res.body.swapTx as string };
   }
 
   // ---- offering: keep one Arkiv offer per slot this agent can spare ----
@@ -456,18 +504,19 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
         SlotOffer,
         {
           provider: w.provider,
-          slot_serial: u64(w.serial),
-          slot_start: u64(w.start),
+          ticket: u64(w.serial),
+          eta: u64(w.start),
           latest_ok_start: u64(w.latestOk),
           min_price: u64(BigInt(w.price)),
           seller: me.id,
           endpoint: `${opts.baseUrl}/offers/${w.provider}/${w.serial}/swap`,
           job_hash: "",
         },
-        { expiration: ExpirationTime.atDate(new Date((w.start - CUTOFF_SECONDS) * 1000)) },
+        // Estimates drift, so the offer is short-lived and re-listed as they move.
+        { expiration: ExpirationTime.atDate(new Date(Math.max(w.start - CUTOFF_SECONDS, now() + 60) * 1000)) },
       );
       state.listings[key] = { key: entityKey, latestOk: w.latestOk, price: w.price };
-      say(`offered ${known(w.provider).name} #${w.serial} (starts in ${w.start - now()}s) for ${w.price} tinybars, swaps into slots up to ${w.latestOk - now()}s from now`);
+      say(`offered ${known(w.provider).name} ticket #${w.serial} (starts in ~${w.start - now()}s) for ${w.price} tinybars, takes tickets starting up to ${w.latestOk - now()}s from now`);
     }
     save();
   }
@@ -480,39 +529,56 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     return locked(() => swapLocked(provider, serial, body));
   }
 
-  async function swapLocked(provider: string, serial: number, body: any): Promise<Res> {
-    const key = slotKey(provider, serial);
+  async function swapLocked(provider: string, ticket: number, body: any): Promise<Res> {
+    const key = slotKey(provider, ticket);
     const listing = state.listings[key];
-    const start = state.slots[key];
     const p = hub.known(provider);
-    if (!trading || !listing || start === undefined || !p) throw new HttpError(410, "offer no longer available");
-    if (now() > start - CUTOFF_SECONDS) throw new HttpError(410, "my slot starts too soon to trade");
+    if (!trading || !listing || state.slots[key] === undefined || !p) throw new HttpError(410, "offer no longer available");
     const buyer = String(body?.buyer ?? "");
-    const buyerSerial = Number(body?.buyerSerial);
-    if (!isAccount(buyer) || !Number.isInteger(buyerSerial)) throw new HttpError(400, "need buyer and buyerSerial");
+    const buyerTicket = Number(body?.buyerTicket);
+    if (!isAccount(buyer) || !Number.isInteger(buyerTicket)) throw new HttpError(400, "need buyer and buyerTicket");
 
-    // Ask consensus, not Arkiv or the Mirror Node: who holds what, and when the buyer's slot runs.
-    const [mine, theirs] = await Promise.all([slotInfo(client, p.tokenId, serial), slotInfo(client, p.tokenId, buyerSerial)]);
-    if (mine.owner !== me.id) {
-      await unlist(key);
-      throw new HttpError(410, "I no longer hold this slot");
-    }
-    if (theirs.owner !== buyer) throw new HttpError(403, `${buyer} does not hold ${p.name} slot #${buyerSerial}`);
-    if (theirs.meta.s < now() + CUTOFF_SECONDS) throw new HttpError(422, `slot #${buyerSerial} starts too soon to trade`);
+    // The provider says where both tickets stand in the queue right now.
+    const q = await queueOf(p).catch(() => null);
+    const mineQ = q?.get(ticket);
+    const theirQ = q?.get(buyerTicket);
+    if (!q || mineQ?.status !== "queued") throw new HttpError(410, "my ticket has already started");
+    if (theirQ?.status !== "queued") throw new HttpError(422, `ticket #${buyerTicket} isn't waiting in ${p.name}'s queue`);
+    if (mineQ.eta < now() + CUTOFF_SECONDS) throw new HttpError(410, "my ticket starts too soon to trade");
     // Re-check against today's jobs, not the listing: new work may have arrived since it was written.
     const { slots, deadlines } = schedule(provider);
-    const after = slots.map((s) => (s.serial === serial ? theirs.meta.s : s.start));
-    if (!feasible(after, deadlines, p.slot)) throw new HttpError(422, `slot #${buyerSerial} (starts ${theirs.meta.s}) would make me miss a deadline`);
-
+    const after = slots.map((s) => (s.serial === ticket ? theirQ.eta : s.start));
+    if (!feasible(after, deadlines, p.slot)) throw new HttpError(422, `ticket #${buyerTicket} (starts ~${theirQ.eta}) would make me miss a deadline`);
     const price = BigInt(listing.price);
+    // Both tickets must be NFTs for an atomic swap; the buyer pays the provider to tokenize them.
+    if (mineQ.serial === null || theirQ.serial === null)
+      throw new HttpError(409, "tokenize both tickets first (POST /tickets/tokenize at the provider), then ask again", { price: price.toString() });
+    const serial = mineQ.serial;
+    const buyerSerial = theirQ.serial;
+
+    // Ask consensus, not the provider or the Mirror Node, who holds each NFT.
+    const [mine, theirs] = await Promise.all([slotInfo(client, p.tokenId, serial), slotInfo(client, p.tokenId, buyerSerial)]);
+    if (mine.owner !== me.id || mine.meta.t !== ticket) {
+      await unlist(key);
+      throw new HttpError(410, "I no longer hold this ticket");
+    }
+    if (theirs.owner !== buyer || theirs.meta.t !== buyerTicket) throw new HttpError(403, `${buyer} does not hold ${p.name} ticket #${buyerTicket}`);
     const terms: SwapTerms = { tokenId: p.tokenId, seller: me.id, sellerSerial: serial, buyer, buyerSerial, price };
     if (!body.tx) {
       // x402-shaped quote. Payment isn't a separate transfer: it rides inside the swap transaction.
       const required: PaymentRequired = {
         x402Version: 2,
-        resource: { url: `${opts.baseUrl}/offers/${provider}/${serial}/swap`, description: `swap into ${p.name} slot #${serial}`, mimeType: "application/json" },
+        resource: { url: `${opts.baseUrl}/offers/${provider}/${ticket}/swap`, description: `swap into ${p.name} ticket #${ticket}`, mimeType: "application/json" },
         accepts: [
-          { scheme: "qy-atomic-swap", network: NETWORK, asset: HBAR, amount: price.toString(), payTo: me.id, maxTimeoutSeconds: SWAP_VALID_SECONDS, extra: { tokenId: p.tokenId, sellerSerial: serial, buyerSerial } },
+          {
+            scheme: "qy-atomic-swap",
+            network: NETWORK,
+            asset: HBAR,
+            amount: price.toString(),
+            payTo: me.id,
+            maxTimeoutSeconds: SWAP_VALID_SECONDS,
+            extra: { tokenId: p.tokenId, sellerTicket: ticket, buyerTicket, sellerSerial: serial, buyerSerial },
+          },
         ],
       };
       return { status: 402, body: required, headers: { "PAYMENT-REQUIRED": encodePaymentRequiredHeader(required) } };
@@ -531,19 +597,19 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     }
     const swapTx = tx.transactionId!.toString();
     delete state.slots[key];
-    state.slots[slotKey(provider, buyerSerial)] = theirs.meta.s;
+    state.slots[slotKey(provider, buyerTicket)] = theirQ.eta;
     await unlist(key);
     state.stats.sold++;
     addTo("earned", price);
     save();
-    say(`SWAPPED ${p.name} #${serial} to ${names[buyer] ?? buyer} for ${price} tinybars, took #${buyerSerial} (starts in ${theirs.meta.s - now()}s): ${hashscan("transaction", swapTx)}`);
+    say(`SWAPPED ${p.name} ticket #${ticket} to ${names[buyer] ?? buyer} for ${price} tinybars, took #${buyerTicket} (starts in ~${theirQ.eta - now()}s): ${hashscan("transaction", swapTx)}`);
 
     // The trade already settled on Hedera; bookkeeping failures are logged, never returned as errors.
-    const hcsSeq = await postEvent(client, p.topicId, me.id, me.key, { type: "trade", sellerSerial: serial, buyerSerial, seller: me.id, buyer, price: price.toString(), swapTx }).catch(
+    const hcsSeq = await postEvent(client, p.topicId, me.id, me.key, { type: "trade", sellerTicket: ticket, buyerTicket, seller: me.id, buyer, price: price.toString(), swapTx }).catch(
       (e) => (say(`HCS: ${e.message}`), ""),
     );
     await writer
-      .createEntity(Trade, { provider, seller_serial: u64(serial), buyer_serial: u64(buyerSerial), price: u64(price), swap_tx: swapTx, hcs_seq: hcsSeq }, { expiration: ExpirationTime.fromDays(1) })
+      .createEntity(Trade, { provider, seller_ticket: u64(ticket), buyer_ticket: u64(buyerTicket), price: u64(price), swap_tx: swapTx, hcs_seq: hcsSeq }, { expiration: ExpirationTime.fromDays(1) })
       .catch((e) => say(`Arkiv trade: ${e.message}`));
     return { body: { swapTx, hcsSeq, hashscan: hashscan("transaction", swapTx) } };
   }
@@ -558,7 +624,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const r = await startJob({ task: spec.task, input: spec.input ?? "", label: spec.label, maxTokens }, { deadline: spec.deadline, lateCost: spec.maxPay, minAsk: spec.minComp, fromUser: true });
     if ("error" in r) throw new HttpError(502, `could not book: ${r.error}`);
     const onItsOwn = r.start + r.slotSeconds <= spec.deadline;
-    return { ...r, deadline: spec.deadline, note: onItsOwn ? "its own slot meets the deadline" : "its own slot is too late; the agent will try to buy an earlier one" };
+    return { ...r, deadline: spec.deadline, note: onItsOwn ? "its place in the queue meets the deadline" : "its place in the queue is too late; the agent will try to buy an earlier one" };
   }
 
   /** Every task the user handed in, newest first, with its status and, once delivered, the result. */
@@ -587,6 +653,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   let running = true;
 
   async function tick() {
+    await locked(refreshEtas).catch((e) => say(`queue refresh failed: ${e.message}`));
     for (const { provider, ev } of toDeliver.splice(0)) await deliver(provider, ev).catch((e) => say(`delivery failed: ${e.message}`));
 
     if (now() >= stopTakingWorkAt) {
