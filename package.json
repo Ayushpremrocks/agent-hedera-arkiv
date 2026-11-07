@@ -16,7 +16,8 @@
     "web": "pnpm -C packages/web dev",
     "host": "pnpm -C packages/host start",
     "provider:join": "pnpm -C packages/provider join",
-    "demo": "tsx spikes/demo.ts"
+    "demo": "tsx spikes/demo.ts",
+    "arkiv:query": "tsx spikes/arkiv-query.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

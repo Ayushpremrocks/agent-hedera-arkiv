@@ -10,8 +10,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     envDir: "../..",
     // The agent host serves /api; proxying keeps the app same-origin, on this machine or over the LAN.
-    server: { host: true, proxy: { "/api": host } },
-    preview: { host: true, proxy: { "/api": host } },
+    // changeOrigin: hosted backends (Railway) route by the Host header, so send theirs, not localhost's.
+    server: { host: true, proxy: { "/api": { target: host, changeOrigin: true } } },
+    preview: { host: true, proxy: { "/api": { target: host, changeOrigin: true } } },
     // Loaded lazily (on sign-in, on PDF drop), so the dev server would only find them then and re-bundle
     // mid-session, breaking open tabs ("Failed to fetch dynamically imported module"). Pre-bundle them up front.
     optimizeDeps: { include: ["@hashgraph/hedera-wallet-connect", "@hiero-ledger/sdk", "pdfjs-dist"] },

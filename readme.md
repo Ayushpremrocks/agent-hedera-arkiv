@@ -78,6 +78,37 @@ Hedera, so it can't be faked.
 Instructions, inputs and results stay private to their owner. Only fingerprints (hashes) go on-chain, so anyone can
 check a result wasn't altered.
 
+### Arkiv: who writes, and a query to run
+
+Five entity types on Arkiv's `rabdi` testnet: `qy_provider`, `qy_offer`, `qy_trade`, `qy_agent` and `qy_task`. See
+[arkiv/schema.md](arkiv/schema.md) for their fields, owners and expiry, and the [arkiv/](arkiv/) folder for the rest.
+
+Wallets that wrote our entities:
+
+| Wallet | Writes |
+|---|---|
+| `0xaD5e84A085d638E1dA05C3B97F0Ad57e9dfB6538` | `qy_provider` (our provider) |
+| `0x0aFb03527c9B512e0AD0aDc5b69438f217b9dd34` | `qy_agent` (the host) |
+| `0x498556a2Bdbc5072E3902ba2216d2d5123FE1009`, `0x3257036190716CF6a777CE7427420435d26D6639`, `0x202305E7404e6bFc5A7b6b8462Ccef97b0781D34` | `qy_task` (hosted user agents) |
+| `0x1d68DB730e720ce015dF90cA260662bbd3370D64`, `0x9044F2963A3b0384CeF050971962b62B4fFB2cf5`, `0xb96957269bEF2ACc81a37C0CEC2Aa5bd8C178E3D`, `0x3Ca72cb62507CD0Ba2E6574593efD874176Ad8Bd` | `qy_offer`, `qy_trade`, `qy_task` (test agents used in the demos) |
+
+Run it (no keys needed):
+
+```bash
+pnpm install
+pnpm arkiv:query      # live providers, open places, trades, finished tasks and agents
+```
+
+The query an agent runs to buy an earlier place, from [packages/shared/src/arkiv.ts](packages/shared/src/arkiv.ts#L72):
+
+```ts
+reader.select().from(SlotOffer).where(and(
+  eq("provider", "0.0.11330602"),
+  lte("start_by", u64(myStart - 1)), gte("start_by", u64(now + 30)),
+  gte("max_tokens", u64(256)), gte("latest_ok_start", u64(myStart)), lte("min_price", u64(budget)),
+)).orderBy(asc("min_price")).limit(20).fetch();
+```
+
 ---
 
 ## Repository
@@ -230,3 +261,16 @@ Set these in `.env` (or `.env.provider` for a provider joined with `provider:joi
 - **One provider per GPU** keeps promises reliable; other software on the same card slows jobs down.
 - **Next:** ENS names for every agent and provider, GPU providers rented on the Golem Network, and API keys so
   developers can book from their own code.
+
+---
+
+## How we used AI
+
+We used Claude Code (Anthropic's coding agent) throughout the build: to write and refactor code across every
+package, run and debug the live checks, draft documentation (this README, the `arkiv/` files) and the pitch
+script. The product idea, the design decisions (start-by promises, escrow refund policy, pay-as-you-go bands,
+trading places, what goes on Arkiv vs Hedera vs our database) and every review and commit are ours.
+
+## License
+
+[MIT](LICENSE)
