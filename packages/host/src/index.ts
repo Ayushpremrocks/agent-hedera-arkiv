@@ -23,7 +23,7 @@ import { agentKey, sessionKey } from "./keys.js";
 import { publishAgent, publishTask, renewAgent, updateTask, writerFor } from "./mirror.js";
 
 const { users, agents, tasks, schedules } = schema;
-const PORT = Number(process.env.HOST_PORT ?? 4100);
+const PORT = Number(process.env.HOST_PORT ?? process.env.PORT ?? 4100); // PORT: what hosting platforms set
 const HOST_URL = process.env.HOST_URL ?? `http://localhost:${PORT}`;
 const AGENT_START_HBAR = 1; // sponsored float, so a new agent can pay its first network fees
 const AGENT_START_TGLM = "0.02"; // Arkiv gas for its offers and public task records

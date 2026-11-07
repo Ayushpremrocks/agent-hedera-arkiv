@@ -133,6 +133,53 @@ URL you give: a LAN address for agents on your network, a public address or tunn
 
 ---
 
+## Deploy
+
+The host and the web app go to the cloud. Providers stay where the GPUs are (your own machine) and are reached
+through an HTTPS tunnel.
+
+```
+browser ──► web (Vercel) ──/api──► host (one container + volume) ──► provider (your machine, via tunnel) ──► Ollama
+   └──────────────── reads /queue directly ─────────────────────────────────┘
+```
+
+**Run only one host at a time.** Two hosts with the same `HOST_SECRET` both run the escrow keeper and every user's
+agent, and could pay the same ticket twice. Stop the local host before starting the cloud one.
+
+### 1. Host (Railway, Fly.io, Render: any Docker host)
+- Deploy the `Dockerfile` at the repository root. Run **one** instance, always on (no scale-to-zero).
+- Attach a persistent volume at `/app/data/host`. It holds the escrow's account and state.
+- Add a Postgres database and set `DATABASE_URL`. Migrations run on start.
+- Set the variables: `HEDERA_OPERATOR_ID`, `HEDERA_OPERATOR_KEY`, `HOST_SECRET` (the same one as before, so existing
+  agents and the escrow keep their accounts), `ARKIV_ACCESS_KEY`, `X402_FACILITATOR_URL`, `ESCROW_ID`, and
+  `HOST_URL` (the host's own public URL). The platform's `PORT` is picked up.
+- Moving from a local host: copy `data/host/escrow.json` and `data/host/escrow-state.json` into the volume if you
+  can. If you can't, the escrow finds its account on Hedera and settles only bookings made from then on, so nothing
+  is paid twice; let every booking settle locally before switching. Users sign in again; their agents keep their
+  accounts. Past task history stays in the local database.
+
+### 2. Web app (Vercel)
+- New project from the repository, root directory `packages/web` (Vite is detected; output `dist`).
+- In `packages/web/vercel.json`, replace `YOUR-HOST-DOMAIN` with the host's domain.
+- Set `VITE_WALLETCONNECT_PROJECT_ID`, and `ENABLE_EXPERIMENTAL_COREPACK=1` so Vercel uses this repository's pnpm.
+- Add the Vercel domain to the allowed domains of your WalletConnect (Reown) project, or HashPack won't connect.
+
+### 3. Provider (your machine)
+The cloud host books through the provider's URL, and visitors' browsers read its queue, so it needs a public
+**HTTPS** address:
+
+```bash
+cloudflared tunnel --url http://localhost:4000      # prints https://<random>.trycloudflare.com
+PROVIDER_URL=https://<random>.trycloudflare.com pnpm provider
+# PowerShell: $env:PROVIDER_URL="https://<random>.trycloudflare.com"; pnpm provider
+```
+
+A quick tunnel gets a new URL each time it starts; the provider publishes its current URL on Arkiv when it starts,
+so set `PROVIDER_URL` each time. For a URL that never changes, use a named Cloudflare tunnel on your own domain.
+The provider's `ESCROW_ID` must match the host's.
+
+---
+
 ## Demo and checks
 
 ```bash

@@ -59,8 +59,18 @@ export async function startEscrow(opts: {
   const accountFile = `${opts.dataDir}/escrow.json`;
   const stateFile = `${opts.dataDir}/escrow-state.json`;
   let id: string;
-  if (existsSync(accountFile)) id = JSON.parse(readFileSync(accountFile, "utf8")).id;
-  else {
+  // Bookings logged before `since` are never settled here: set when the account is adopted without its saved
+  // state (a new machine), because those were settled by the old keeper and would otherwise be paid twice.
+  let since = 0;
+  const alias = PrivateKey.fromStringDer(opts.key).publicKey.toEvmAddress();
+  const existing = existsSync(accountFile) ? null : await fetch(`${MIRROR}/accounts/0x${alias}`).then((r) => (r.ok ? (r.json() as Promise<{ account?: string }>) : null));
+  if (existsSync(accountFile)) ({ id, since = 0 } = JSON.parse(readFileSync(accountFile, "utf8")));
+  else if (existing?.account) {
+    id = existing.account;
+    since = existsSync(stateFile) ? 0 : Math.floor(Date.now() / 1000);
+    writeFileSync(accountFile, JSON.stringify({ id, since }, null, 2));
+    if (since) console.log(`escrow ${id}: adopted without its saved state; settling only bookings from now on`);
+  } else {
     // 5 HBAR of float pays the keeper's own transfer fees; everything else in it is held bookings.
     const receipt = await (
       await new AccountCreateTransaction().setECDSAKeyWithAlias(PrivateKey.fromStringDer(opts.key)).setInitialBalance(new Hbar(5)).execute(opts.operator)
@@ -91,6 +101,7 @@ export async function startEscrow(opts: {
         if (x.e.type !== "booked" || !x.e.paymentTx || typeof x.e.startBy !== "number") continue;
         const key = `${p.id}:${x.e.ticket}`;
         let e = entries[key];
+        if (!e && x.ts < since) continue; // the previous keeper's (see `since`)
         if (!e) {
           const held = await paidInto(x.e.paymentTx, id, BigInt(x.e.price)).catch(() => null);
           if (held === null) continue; // Mirror Node not answering: look again next round
