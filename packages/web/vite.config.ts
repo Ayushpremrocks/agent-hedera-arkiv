@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
     preview: { host: true, proxy: { "/api": { target: host, changeOrigin: true } } },
     // Loaded lazily (on sign-in, on PDF drop), so the dev server would only find them then and re-bundle
     // mid-session, breaking open tabs ("Failed to fetch dynamically imported module"). Pre-bundle them up front.
-    optimizeDeps: { include: ["@hashgraph/hedera-wallet-connect", "@hiero-ledger/sdk", "pdfjs-dist"] },
+    optimizeDeps: { include: ["@hashgraph/hedera-wallet-connect", "@hiero-ledger/sdk", "@reown/appkit", "pdfjs-dist"] },
     define: {
       global: "globalThis", // WalletConnect's dependencies expect Node's global
     },

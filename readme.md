@@ -221,6 +221,9 @@ pnpm test                 # unit tests: scheduling, escrow rules, pricing, track
 pnpm typecheck
 ```
 
+The demo reads the escrow's verdicts from the host at `http://localhost:4100`. With the host deployed, point it there:
+`$env:HOST_URL="https://qyhost-production.up.railway.app"; pnpm demo` (PowerShell).
+
 Every demo step prints PASS or FAIL and links the real payment and payout transactions on HashScan. Deeper live
 checks: `spikes/provider-check.ts` (40 checks against a running provider), `spikes/host-check.ts` (the hosted flow), `spikes/schedule-check.ts` (recurring jobs, about 7 minutes) and
 `spikes/contention-check.ts` (`FLOOD=0/3/8` outside generations).

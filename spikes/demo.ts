@@ -157,7 +157,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     if (!first?.ticket) return check("reservation accepted", false);
     const t1 = await tokenize([first.ticket]);
     const serial = Number(t1.body.serials?.[first.ticket]);
-    check("tokenized: the ticket is now an NFT the holder owns", t1.status === 200 && serial > 0, `NFT #${serial} for ${hb(t1.body.price)}, locked for trading ${t1.body.lockedUntil - now()}s`);
+    check("tokenized: the ticket is now an NFT the holder owns", t1.status === 200 && serial > 0, t1.status === 200 ? `NFT #${serial} for ${hb(t1.body.price)}, locked for trading ${t1.body.lockedUntil - now()}s` : `${t1.status} ${t1.body.error ?? JSON.stringify(t1.body)}`);
     if (!(serial > 0)) return;
     say(`NFT on HashScan: ${hashscan("token", first.tokenId)}/${serial}`);
     const client = hederaClient(A.id, A.key);
