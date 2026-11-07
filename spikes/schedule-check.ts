@@ -1,4 +1,4 @@
-// Live check of batches and recurring jobs through the host (run `pnpm host` and a provider first).
+// Live check of recurring jobs through the host (run `pnpm host` and a provider first).
 // AGENT_D plays the wallet user, as in host-check. Takes about 7 minutes: a schedule's runs are 5 minutes apart.
 import { AccountAllowanceApproveTransaction, Hbar } from "@hiero-ledger/sdk";
 import { proto } from "@hiero-ledger/proto";
@@ -45,27 +45,8 @@ await until(30, () => api("/me"), (r) => BigInt(r.body.agent?.allowance ?? 0) > 
 const job = { task: "Answer in one short sentence.", withinSeconds: 600, maxTokens: 256, maxPay: "0", minComp: "2000000" };
 
 // ---- validation at the boundary ----
-expect("batch with no items refused (400)", (await api("/batches", { ...job, label: "x", items: [] })).status === 400);
-expect("batch over 50 items refused (400)", (await api("/batches", { ...job, label: "x", items: Array(51).fill("q") })).status === 400);
 expect("schedule due after its next run refused (400)", (await api("/schedules", { ...job, label: "x", input: "q", every: 300, runs: 2 })).status === 400);
 expect("schedule more often than 5 min refused (400)", (await api("/schedules", { ...job, withinSeconds: 120, label: "x", input: "q", every: 60, runs: 2 })).status === 400);
-
-// ---- a batch of three ----
-const questions = ["What is a GPU?", "What is an escrow?", "What is a deadline?"];
-const made = await api("/batches", { ...job, label: "batch check", items: questions });
-expect("batch accepted", made.status === 200 && made.body.count === 3, made.body.id ?? made.body.error);
-const batch = (await until(180, () => api(`/batches/${made.body.id}`), (r) => r.body.batch?.status !== "booking")).body;
-expect("all three booked, in order", batch.batch.status === "booked" && batch.batch.booked === 3 && batch.tasks.map((t: any) => t.batchIndex).sort().join() === "0,1,2", `${batch.batch.booked} booked, ${batch.batch.failed} failed ${JSON.stringify(batch.batch.errors)}`);
-const tagged = (await api("/tasks")).body.tasks.filter((t: any) => t.batchId === made.body.id).length;
-expect("tasks list carries the batch id", tagged === 3, tagged);
-
-// a second batch, stopped straight away: whatever wasn't booked yet never is
-const stop = await api("/batches", { ...job, label: "batch stop check", items: ["a", "b", "c", "d", "e"] });
-const cancelled = await api(`/batches/${stop.body.id}/cancel`, {});
-const stopped = (await api(`/batches/${stop.body.id}`)).body.batch; // one booking may still be in flight
-await sleep(20);
-const later = (await api(`/batches/${stop.body.id}`)).body.batch;
-expect("a stopped batch books nothing more", cancelled.body.cancelled === true && later.status === "cancelled" && later.booked <= stopped.booked + 1 && later.booked < 5, `${later.booked} of 5 booked`);
 
 // ---- a schedule: two runs, five minutes apart; the second runs on the place reserved ahead ----
 const sch = await api("/schedules", { ...job, withinSeconds: 240, label: "schedule check", input: "Say hello.", every: 300, runs: 2 });
@@ -89,10 +70,5 @@ expect("second run booked, schedule finished", s2.runsDone === 2 && s2.runsLeft 
 const run2 = second.body.runs.find((r: any) => r.label.endsWith("run 2"));
 expect("second run used the reserved place (no new booking charge)", run2?.price === "0", run2?.price);
 
-// ---- results ----
-const done = await until(240, () => api(`/batches/${made.body.id}`), (r) => r.body.tasks.every((t: any) => t.status === "done" || t.status === "failed"));
-const ok = done.body.tasks.filter((t: any) => t.status === "done" && t.result);
-expect("every batch job delivered a result", ok.length === 3, ok.map((t: any) => `#${t.batchIndex + 1}: ${String(t.result).slice(0, 40)}`).join(" | "));
-expect("every batch job started on time", ok.every((t: any) => t.onTime), ok.map((t: any) => t.onTime).join());
 const runs = await until(180, () => api(`/schedules/${sch.body.id}`), (r) => r.body.runs.every((t: any) => t.status === "done" || t.status === "failed"));
 expect("both scheduled runs delivered", runs.body.runs.length === 2 && runs.body.runs.every((t: any) => t.status === "done"), runs.body.runs.map((t: any) => `${t.label}: ${t.status}`).join(", "));

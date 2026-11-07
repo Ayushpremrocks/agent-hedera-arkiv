@@ -56,13 +56,10 @@ A booking is just a place in a provider's queue: nothing is minted. Only when a 
 NFT, so the swap can be atomic. Once the ticket has started, the holder hands the NFT back. The next trade rewrites its
 metadata and reissues it (about $0.001) instead of minting a new one (about $0.02).
 
-### 6. Batches and schedules
-- **Batch:** one instruction over many inputs (one job per file, per line, or per CSV row; up to 50). Each input is
-  booked as its own job with its own promise and escrow deposit. The batch page tracks them together and exports the
-  results as JSON or CSV.
-- **Repeat:** a job that runs every 15 minutes to every day, for a set number of runs. Before each run, the agent
-  reserves its place ahead at today's price, so the run starts on time even when the network is busy. Schedules can
-  be paused, resumed or deleted. Runs missed while the host was down are skipped, not piled up.
+### 6. Recurring jobs
+A job can repeat every 15 minutes to every day, for a set number of runs. Before each run, the agent reserves its
+place ahead at today's price, so the run starts on time even when the network is busy. Schedules can be paused,
+resumed or deleted. Runs missed while the host was down are skipped, not piled up.
 
 ### 7. Open to every provider
 Anyone with a GPU can join with one command and their own Hedera account; nobody else's keys are involved. Every
@@ -147,7 +144,7 @@ pnpm typecheck
 ```
 
 Every demo step prints PASS or FAIL and links the real payment and payout transactions on HashScan. Deeper live
-checks: `spikes/provider-check.ts` (40 checks against a running provider), `spikes/host-check.ts` (the hosted flow) and
+checks: `spikes/provider-check.ts` (40 checks against a running provider), `spikes/host-check.ts` (the hosted flow), `spikes/schedule-check.ts` (recurring jobs, about 7 minutes) and
 `spikes/contention-check.ts` (`FLOOD=0/3/8` outside generations).
 
 `DEMO_FAULTS=1` turns on a pause switch only the provider's own key can use, so a demo can make it miss promises on

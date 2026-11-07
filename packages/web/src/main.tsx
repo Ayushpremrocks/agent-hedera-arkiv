@@ -20,7 +20,6 @@ const TaskDetail = page("TaskDetail", () => import("./pages/TaskDetail"));
 const Tasks = page("Tasks", () => import("./pages/Tasks"));
 const ProviderPage = page("ProviderPage", () => import("./pages/ProviderPage"));
 const Provide = page("Provide", () => import("./pages/Provide"));
-const BatchDetail = page("BatchDetail", () => import("./pages/BatchDetail"));
 const Schedules = page("Schedules", () => import("./pages/Schedules"));
 import { Toaster } from "./components/motion";
 import { SessionProvider, useSession } from "./lib/session";
@@ -56,7 +55,6 @@ createRoot(document.getElementById("root")!).render(
               <Route path="app/tasks" element={<RequireAccount children={<Tasks />} />} />
               <Route path="app/tasks/new" element={<RequireAccount children={<NewTask />} />} />
               <Route path="app/tasks/:jobHash" element={<RequireAccount children={<TaskDetail />} />} />
-              <Route path="app/batches/:id" element={<RequireAccount children={<BatchDetail />} />} />
               <Route path="app/schedules" element={<RequireAccount children={<Schedules />} />} />
               <Route path="app/billing" element={<RequireAccount children={<Billing />} />} />
               <Route path="app/settings" element={<RequireAccount children={<Settings />} />} />

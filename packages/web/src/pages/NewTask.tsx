@@ -1,12 +1,11 @@
 // The job composer: start from a job type, attach the material, pick an output and a size, set the
 // deadline on the timeline, and see the plan (provider, size band, deposit, guaranteed start) before booking.
-import { ArrowsClockwise, Code, FileText, Funnel, Lightning, ListBullets, MagnifyingGlass, PencilSimple, Repeat, Stack, Translate, UploadSimple, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Code, FileText, Funnel, Lightning, ListBullets, MagnifyingGlass, PencilSimple, Repeat, Translate, UploadSimple, X } from "@phosphor-icons/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "../components/motion";
 import { Notice, PageHeader, PromiseTrack, useNow } from "../components/ui";
-import { MAX_ITEMS, type Split, itemsOf } from "../lib/batch";
 import { clock, hbar, inHuman, toTinybars } from "../lib/format";
 import { useMe } from "../lib/hooks";
 import { type Provider, keptRate } from "../lib/market";
@@ -36,12 +35,7 @@ const PRIORITY = {
   rush: { label: "Rush", maxPay: 0.3, minComp: 0.5 },
 } as const;
 
-type Mode = "once" | "batch" | "repeat";
-const SPLITS: [Split, string][] = [
-  ["file", "Per file"],
-  ["line", "Per line"],
-  ["row", "Per CSV row"],
-];
+type Mode = "once" | "repeat";
 const EVERY: [number, string][] = [
   [900, "15 min"],
   [1800, "30 min"],
@@ -100,7 +94,6 @@ export function NewTask() {
   const [minComp, setMinComp] = useState<number>(PRIORITY.standard.minComp);
   const [choice, setChoice] = useState<string>("auto");
   const [mode, setMode] = useState<Mode>("once");
-  const [split, setSplit] = useState<Split>("file");
   const [every, setEvery] = useState(3600);
   const [runs, setRuns] = useState(24);
   const [reading, setReading] = useState(false);
@@ -134,12 +127,8 @@ export function NewTask() {
   };
 
   const input = [...files.map((f) => `--- ${f.name} ---\n${f.text}`), pasted].filter(Boolean).join("\n\n");
-  const items = mode === "batch" ? itemsOf(split, files, pasted) : [];
-  const longItem = items.findIndex((x) => x.length > MAX_INPUT_CHARS);
-  const over = mode === "batch" ? longItem >= 0 : input.length > MAX_INPUT_CHARS;
-  const count = mode === "batch" ? items.length : mode === "repeat" ? runs : 1;
-  const batchProblem =
-    mode !== "batch" ? "" : !items.length ? "Add material: each file, line or row becomes one job." : items.length > MAX_ITEMS ? `A batch takes up to ${MAX_ITEMS} jobs; this material makes ${items.length}.` : "";
+  const over = input.length > MAX_INPUT_CHARS;
+  const count = mode === "repeat" ? runs : 1;
   const repeatProblem = mode === "repeat" && within > every ? `Each run must be due before the next one starts: set "Needed within" to ${everyLabel(every)} or less.` : "";
   // The instructions the model gets: the user's, plus how to shape the answer.
   const fullTask =
@@ -166,7 +155,6 @@ export function NewTask() {
   const budget = me.data?.agent?.allowance;
   const noBudget = budget === "0";
   const total = plan ? plan.deposit * BigInt(count) : 0n;
-  const overBudget = mode === "batch" && budget != null && total > BigInt(budget);
   const placesOnOffer = (offers.data ?? []).filter((o) => o.start > now && (!plan || o.provider === plan.p.id) && o.byOwner).length;
 
   const book = useMutation({
@@ -180,20 +168,18 @@ export function NewTask() {
         minComp: toTinybars(String(minComp)),
         provider: choice === "auto" ? undefined : choice,
       };
-      if (mode === "batch") return `/app/batches/${(await api<{ id: string }>("/batches", { ...job, items })).id}`;
       if (mode === "repeat") return `/app/schedules#${(await api<{ id: string }>("/schedules", { ...job, input: input.slice(0, MAX_INPUT_CHARS), every, runs })).id}`;
       return `/app/tasks/${(await api<{ jobHash: string }>("/tasks", { ...job, input: input.slice(0, MAX_INPUT_CHARS) })).jobHash}`;
     },
     onSuccess: (to) => {
-      if (mode === "batch") toast("success", `Booking ${items.length} jobs`, "Each one gets its own start time. Follow them here.");
-      else if (mode === "repeat") toast("success", "Schedule set", "The first run starts now; later runs reserve their place ahead.");
+      if (mode === "repeat") toast("success", "Schedule set", "The first run starts now; later runs reserve their place ahead.");
       else toast("success", "Job booked", "It has its start time. Follow it here.");
       qc.invalidateQueries({ queryKey: ["tasks"] });
       navigate(to, { viewTransition: true });
     },
-    onError: (e) => toast("error", mode === "batch" ? "Couldn't start the batch" : mode === "repeat" ? "Couldn't set the schedule" : "Couldn't book the job", e.message),
+    onError: (e) => toast("error", mode === "repeat" ? "Couldn't set the schedule" : "Couldn't book the job", e.message),
   });
-  const canBook = !!plan && !!task.trim() && !noBudget && !book.isPending && !over && !batchProblem && !repeatProblem && !overBudget;
+  const canBook = !!plan && !!task.trim() && !noBudget && !book.isPending && !over && !repeatProblem;
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     if (canBook) book.mutate();
@@ -279,16 +265,10 @@ export function NewTask() {
               </ul>
             )}
             <textarea rows={4} value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="…or paste text here." aria-label="Pasted material" />
-            {over && (
-              <p className="warn small">
-                {mode === "batch"
-                  ? `Job ${longItem + 1} is too long: each can carry ${MAX_INPUT_CHARS.toLocaleString("en")} characters.`
-                  : `Too long: a job can carry ${MAX_INPUT_CHARS.toLocaleString("en")} characters. Remove a file or shorten the text.`}
-              </p>
-            )}
+            {over && <p className="warn small">Too long: a job can carry {MAX_INPUT_CHARS.toLocaleString("en")} characters. Remove a file or shorten the text.</p>}
           </section>
 
-          {/* run once, over many inputs, or on a schedule */}
+          {/* run once, or on a schedule */}
           <section className="cmp-block" aria-labelledby="run-h">
             <div className="cmp-head">
               <h2 id="run-h">Run</h2>
@@ -296,7 +276,6 @@ export function NewTask() {
                 {(
                   [
                     ["once", "Once", null],
-                    ["batch", "Batch", Stack],
                     ["repeat", "Repeat", Repeat],
                   ] as const
                 ).map(([m, l, Icon]) => (
@@ -311,29 +290,6 @@ export function NewTask() {
               </div>
             </div>
             {mode === "once" && <p className="muted small">One job with all the material above.</p>}
-            {mode === "batch" && (
-              <>
-                <div className="seg seg-sm" role="radiogroup" aria-label="One job per">
-                  {SPLITS.map(([v, l]) => (
-                    <label key={v}>
-                      <input type="radio" name="split" checked={split === v} onChange={() => setSplit(v)} />
-                      <span>{l}</span>
-                    </label>
-                  ))}
-                </div>
-                <p className={batchProblem ? "warn small" : "muted small"}>
-                  {batchProblem || `${items.length} job${items.length === 1 ? "" : "s"}, same instructions, one ${split === "row" ? "row" : split} each. All are due by the same deadline.`}
-                </p>
-                {items.length > 0 && !batchProblem && (
-                  <ol className="batch-preview">
-                    {items.slice(0, 3).map((x, i) => (
-                      <li key={i}>{x.slice(0, 140)}</li>
-                    ))}
-                    {items.length > 3 && <li className="muted">…and {items.length - 3} more</li>}
-                  </ol>
-                )}
-              </>
-            )}
             {mode === "repeat" && (
               <>
                 <div className="cmp-row">
@@ -523,14 +479,14 @@ export function NewTask() {
                   <dt>Deposit, at most</dt>
                   <dd>
                     {hbar(plan.deposit)}
-                    {count > 1 && <small className="muted">per job</small>}
+                    {count > 1 && <small className="muted">per run</small>}
                   </dd>
                 </div>
-                {mode !== "once" && (
+                {mode === "repeat" && (
                   <div>
-                    <dt>{mode === "batch" ? "Jobs" : "Runs"}</dt>
+                    <dt>Runs</dt>
                     <dd>
-                      {mode === "batch" ? count : `${runs}, every ${everyLabel(every)}`}
+                      {runs}, every {everyLabel(every)}
                       {count > 1 && <small className="muted">up to {hbar(total)} in all</small>}
                     </dd>
                   </div>
@@ -538,22 +494,19 @@ export function NewTask() {
               </dl>
               <PromiseTrack booked={Math.floor(now)} startBy={plan.startBy} deadline={deadline} finishedAt={plan.finish} status="preview" onTime={plan.fits} size="lg" />
               <p className={plan.fits ? "verdict ok" : "verdict late"}>
-                {mode === "batch" && plan.fits
-                  ? `The first starts by ${clock(plan.startBy)}. Each job gets its own start time as it's booked; the batch page shows them all.`
-                  : plan.fits
+                {plan.fits
                   ? `Guaranteed in time: starts by ${clock(plan.startBy)}, done by ${clock(plan.finish)} at the latest.`
                   : maxPay > 0
                     ? "Too late on its own; your agent will try to buy an earlier place."
                     : "Too late for this deadline. Give it more time, a shorter output, or a budget to go first."}
               </p>
-              {overBudget && <p className="warn small">This batch can deposit up to {hbar(total)}, more than your budget left. Raise it on Billing, or split the material.</p>}
               <p className="muted small">The deposit waits in escrow. You pay the size band the job actually uses, and get the rest back.</p>
             </>
           ) : (
             <p className="muted">{providers.isLoading ? "Checking providers…" : "No provider can take this job right now."}</p>
           )}
           <button type="submit" className="btn btn-primary btn-block" disabled={!canBook} aria-busy={book.isPending}>
-            {book.isPending ? "Booking…" : mode === "batch" ? `Book ${items.length || ""} jobs` : mode === "repeat" ? "Start schedule" : "Book job"}
+            {book.isPending ? "Booking…" : mode === "repeat" ? "Start schedule" : "Book job"}
             <kbd>Ctrl ↵</kbd>
           </button>
           <Link to="/app/billing" className="text-link quiet" viewTransition>

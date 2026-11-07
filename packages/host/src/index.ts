@@ -22,7 +22,7 @@ import { allowanceLeft, balanceOf, ensureFunds, sweep } from "./funding.js";
 import { agentKey, sessionKey } from "./keys.js";
 import { publishAgent, publishTask, renewAgent, updateTask, writerFor } from "./mirror.js";
 
-const { users, agents, tasks, batches, schedules } = schema;
+const { users, agents, tasks, schedules } = schema;
 const PORT = Number(process.env.HOST_PORT ?? 4100);
 const HOST_URL = process.env.HOST_URL ?? `http://localhost:${PORT}`;
 const AGENT_START_HBAR = 1; // sponsored float, so a new agent can pay its first network fees
@@ -219,7 +219,7 @@ const creating = new Set<string>();
 const isAccount = (x: unknown): x is string => typeof x === "string" && /^0\.0\.\d+$/.test(x);
 const MAX_INPUT = 16_000;
 
-/** Check what every job shares, whether booked alone, in a batch or on a schedule. */
+/** Check what every job shares, whether booked alone or on a schedule. */
 function jobSpec(body: any): JobSpec {
   const within = Number(body?.withinSeconds);
   if (!Number.isInteger(within) || within < 60 || within > 86_400) throw new HttpError(400, "withinSeconds must be 60..86400");
@@ -240,10 +240,10 @@ function jobSpec(body: any): JobSpec {
 }
 
 /**
- * Book one job for a user's agent and keep its private parts (instruction, input) and its batch or
+ * Book one job for a user's agent and keep its private parts (instruction, input) and its
  * schedule with it. The booking event inserts the row asynchronously, so wait for it before updating.
  */
-async function bookFor(agent: Agent, owner: string, spec: JobSpec, label: string, deadline: number, link: { batchId?: string; batchIndex?: number; scheduleId?: string } = {}) {
+async function bookFor(agent: Agent, owner: string, spec: JobSpec, label: string, deadline: number, link: { scheduleId?: string } = {}) {
   const r = await agent.submitTask({
     task: spec.task,
     input: spec.input,
@@ -264,50 +264,6 @@ async function bookFor(agent: Agent, owner: string, spec: JobSpec, label: string
     await new Promise((res) => setTimeout(res, 250));
   }
   return r;
-}
-
-/** Book a batch's items one at a time, in the background; resumes after a restart. */
-const batching = new Set<string>();
-async function runBatch(id: string) {
-  if (batching.has(id)) return;
-  batching.add(id);
-  let tries = 0;
-  try {
-    for (;;) {
-      const b = (await db.select().from(batches).where(eq(batches.id, id)))[0];
-      if (!b || b.status !== "booking") return;
-      const i = b.booked + b.failed;
-      if (i >= b.items.length) {
-        await db.update(batches).set({ status: "booked" }).where(eq(batches.id, id));
-        return;
-      }
-      const h = hosted.get(b.agentId);
-      let error: string | null = null;
-      if (!h) error = "the agent isn't running";
-      else if (now() + 30 > b.deadline) error = "the batch's deadline passed before this item could be booked";
-      else {
-        try {
-          await bookFor(h.agent, b.owner, { ...b.spec, input: b.items[i] }, `${b.label} #${i + 1}`, b.deadline, { batchId: id, batchIndex: i });
-        } catch (e) {
-          error = (e as Error).message;
-        }
-      }
-      // Nobody is watching a batch book: ride out a brief gap (no provider quoting) instead of failing the item.
-      if (error && h && ++tries < 3 && now() + 45 < b.deadline) {
-        await new Promise((res) => setTimeout(res, 10_000));
-        continue;
-      }
-      tries = 0;
-      await db
-        .update(batches)
-        .set(error ? { failed: b.failed + 1, errors: [...(b.errors ?? []), { index: i, error: error.slice(0, 300) }] } : { booked: b.booked + 1 })
-        .where(eq(batches.id, id));
-    }
-  } catch (e) {
-    console.error(`batch ${id}:`, (e as Error).message);
-  } finally {
-    batching.delete(id);
-  }
 }
 
 /**
@@ -395,41 +351,6 @@ await serve(PORT, {
     return { body: await bookFor(h.agent, account, spec, body.label, now() + spec.withinSeconds) };
   },
 
-  // ---- batches: one set of instructions over many inputs, each its own job ----
-  "POST /api/batches": async ({ headers, body }) => {
-    const { account, h, row } = await mine(headers);
-    if (!h || !row) throw new HttpError(404, "create your agent first");
-    const items = body?.items;
-    if (!Array.isArray(items) || items.length < 1 || items.length > 50 || !items.every((x) => typeof x === "string" && x.length <= MAX_INPUT))
-      throw new HttpError(400, `items must be 1..50 texts of at most ${MAX_INPUT} characters`);
-    if (typeof body.label !== "string" || !body.label.trim()) throw new HttpError(400, "label must be text");
-    const spec = jobSpec({ ...body, input: undefined });
-    const id = randomBytes(8).toString("hex");
-    await db.insert(batches).values({ id, owner: account, agentId: row.id, label: body.label.slice(0, 80), spec, items, deadline: now() + spec.withinSeconds });
-    void runBatch(id);
-    return { body: { id, count: items.length } };
-  },
-  "GET /api/batches/:id": async ({ headers, params }) => {
-    const account = session(headers);
-    const b = (await db.select().from(batches).where(and(eq(batches.id, params.id), eq(batches.owner, account))))[0];
-    if (!b) throw new HttpError(404, "no such batch");
-    const runs = await db
-      .select({ jobHash: tasks.jobHash, batchIndex: tasks.batchIndex, label: tasks.label, status: tasks.status, onTime: tasks.onTime, deadline: tasks.deadline, start: tasks.start, finishedAt: tasks.finishedAt, failure: tasks.failure, price: tasks.price, result: tasks.result, createdAt: tasks.createdAt })
-      .from(tasks)
-      .where(and(eq(tasks.batchId, b.id), eq(tasks.owner, account)));
-    const { items, ...rest } = b;
-    return { body: { batch: { ...rest, total: items.length, inputs: items.map((x) => x.slice(0, 160)) }, tasks: runs } };
-  },
-  "POST /api/batches/:id/cancel": async ({ headers, params }) => {
-    const account = session(headers);
-    const r = await db
-      .update(batches)
-      .set({ status: "cancelled" })
-      .where(and(eq(batches.id, params.id), eq(batches.owner, account), eq(batches.status, "booking")))
-      .returning({ id: batches.id });
-    return { body: { cancelled: r.length > 0 } };
-  },
-
   // ---- recurring jobs ----
   "POST /api/schedules": async ({ headers, body }) => {
     const { account, h, row } = await mine(headers);
@@ -495,7 +416,6 @@ await serve(PORT, {
         price: tasks.price,
         rushPaid: tasks.rushPaid,
         preview: sql<string | null>`left(${tasks.result}, 240)`,
-        batchId: tasks.batchId,
         scheduleId: tasks.scheduleId,
         createdAt: tasks.createdAt,
       })
@@ -549,7 +469,6 @@ await serve(PORT, {
 console.log(`host API on ${HOST_URL}`);
 
 hub.start((e) => console.error("hub:", e.message));
-for (const b of await db.select({ id: batches.id }).from(batches).where(eq(batches.status, "booking"))) void runBatch(b.id); // resume after a restart
 let scheduling = false;
 setInterval(() => {
   if (scheduling) return;

@@ -14,8 +14,8 @@ const NAV = [
   ["/app/settings", "Settings", GearSix],
 ] as const;
 
-/** Which nav item a path belongs to (task and batch pages belong to Tasks). */
-const section = (path: string) => (path.startsWith("/app/tasks") || path.startsWith("/app/batches") ? "/app/tasks" : path);
+/** Which nav item a path belongs to (task pages belong to Tasks). */
+const section = (path: string) => (path.startsWith("/app/tasks") ? "/app/tasks" : path);
 const short = (id: string) => (id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id);
 
 /** The agent's state in one line: what it's doing, and the budget it may still spend. */

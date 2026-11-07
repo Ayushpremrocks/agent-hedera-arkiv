@@ -54,41 +54,15 @@ export const tasks = pgTable(
     failure: text("failure"),
     finishedAt: bigint("finished_at", { mode: "number" }),
     arkivKey: text("arkiv_key"), // its public qy_task record
-    batchId: text("batch_id"), // set when booked as part of a batch
-    batchIndex: integer("batch_index"), // its item number in that batch (0-based)
     scheduleId: text("schedule_id"), // set when booked by a recurring schedule
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [index("tasks_owner_created").on(t.owner, t.createdAt), index("tasks_batch").on(t.batchId), index("tasks_schedule").on(t.scheduleId)],
+  (t) => [index("tasks_owner_created").on(t.owner, t.createdAt), index("tasks_schedule").on(t.scheduleId)],
 );
 
-/** What every job of a batch or schedule shares. Inputs are private, like a task's. */
+/** What every run of a schedule shares. The input is private, like a task's. */
 export type JobSpec = { task: string; input?: string; withinSeconds: number; maxTokens: number; maxPay: string; minComp: string; provider?: string };
-
-/** One set of instructions over many inputs: each item becomes its own job, booked in the background. */
-export const batches = pgTable(
-  "batches",
-  {
-    id: text("id").primaryKey(),
-    owner: text("owner")
-      .notNull()
-      .references(() => users.account),
-    agentId: text("agent_id")
-      .notNull()
-      .references(() => agents.id),
-    label: text("label").notNull(),
-    spec: jsonb("spec").$type<JobSpec>().notNull(),
-    items: jsonb("items").$type<string[]>().notNull(), // one input per job (private)
-    deadline: bigint("deadline", { mode: "number" }).notNull(), // every job's deadline, unix seconds
-    booked: integer("booked").notNull().default(0),
-    failed: integer("failed").notNull().default(0),
-    errors: jsonb("errors").$type<{ index: number; error: string }[]>(),
-    status: text("status").notNull().default("booking"), // booking | booked | cancelled
-    createdAt: createdAt(),
-  },
-  (t) => [index("batches_owner_created").on(t.owner, t.createdAt)],
-);
 
 /** A job that runs again every `every` seconds; each run's capacity is reserved ahead of time. */
 export const schedules = pgTable(

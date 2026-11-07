@@ -17,7 +17,6 @@ export type TaskRow = {
   price: string | null;
   rushPaid: string | null;
   preview: string | null;
-  batchId: string | null;
   scheduleId: string | null;
   createdAt: string;
 };
