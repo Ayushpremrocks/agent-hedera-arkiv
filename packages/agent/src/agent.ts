@@ -105,7 +105,8 @@ export type State = {
   listings: Record<string, Listing>; // "provider:ticket" -> live Arkiv offer
   stats: { booked: number; met: number; late: number; failed: number; bought: number; sold: number; spent: string; earned: string; refunded?: string; reserved?: number };
 };
-export type TaskSpec = { task: string; input?: string; label: string; deadline: number; maxTokens?: number; maxPay: bigint; minComp: bigint };
+// provider: run on this provider only (the user picked it); otherwise the agent chooses.
+export type TaskSpec = { task: string; input?: string; label: string; deadline: number; maxTokens?: number; maxPay: bigint; minComp: bigint; provider?: string };
 
 const now = () => Math.floor(Date.now() / 1000);
 // Delivery is judged by the consensus time of the provider's `done` message, which lands after the job
@@ -310,7 +311,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     return [...inTime, ...late];
   }
 
-  type Terms = { deadline?: number; lateCost?: bigint; minAsk?: bigint; fromUser?: boolean };
+  type Terms = { deadline?: number; lateCost?: bigint; minAsk?: bigint; fromUser?: boolean; provider?: string };
 
   /** Pick a provider and book a slot there for a task. Returns the booking, or an error message. */
   async function startJob(t: Task, terms: Terms = {}) {
@@ -325,6 +326,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const quoted = (
       await Promise.all(
         rankProviders(deadline, job.maxTokens)
+          .filter((c) => !terms.provider || c.id === terms.provider)
           .slice(0, 3)
           .map(async (c) => {
             const q = await postPaid(`${c.bookingUrl}/book`, request, undefined, 0, 5000).catch(() => null);
@@ -407,7 +409,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   async function useReservation(job: Job, hash: string, terms: Terms): Promise<boolean> {
     for (const provider of activeProviders()) {
       const p = hub.known(provider);
-      if (!p) continue;
+      if (!p || (terms.provider && provider !== terms.provider)) continue;
       const { slots, starts, deadlines, run } = schedule(provider);
       const spare = slots.length > deadlines.length && slots.some((s) => s.size >= job.maxTokens);
       if (!spare || !feasible(starts, [...deadlines, job.deadline - LOG_SLACK], Math.max(run, runFor(p, job.maxTokens)))) continue;
@@ -715,7 +717,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     const maxTokens = spec.maxTokens ?? 300;
     if (!Number.isInteger(spec.deadline) || spec.deadline < now() + 30) throw new HttpError(400, "deadline must be unix seconds at least 30s from now");
     if (!Number.isInteger(maxTokens) || maxTokens < 1) throw new HttpError(400, "maxTokens must be a positive integer");
-    const r = await startJob({ task: spec.task, input: spec.input ?? "", label: spec.label, maxTokens }, { deadline: spec.deadline, lateCost: spec.maxPay, minAsk: spec.minComp, fromUser: true });
+    const r = await startJob({ task: spec.task, input: spec.input ?? "", label: spec.label, maxTokens }, { deadline: spec.deadline, lateCost: spec.maxPay, minAsk: spec.minComp, fromUser: true, provider: spec.provider });
     if ("error" in r) throw new HttpError(502, `could not book: ${r.error}`);
     const onItsOwn = r.start + r.slotSeconds + LOG_SLACK <= spec.deadline;
     return { ...r, deadline: spec.deadline, note: onItsOwn ? "its place in the queue meets the deadline" : "its place in the queue is too late; the agent will try to buy an earlier one" };

@@ -4,7 +4,23 @@ import { motion, useReducedMotion } from "motion/react";
 import { CopyButton, Dots, Skeleton } from "../components/motion";
 import { Notice, PageHeader, PromiseTrack, StatusBadge } from "../components/ui";
 import { clock, hashscan, hbar } from "../lib/format";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useSession } from "../lib/session";
+
+/** A result as it was asked for: valid JSON pretty-printed, anything else rendered as Markdown (plain text included). */
+function Result({ text }: { text: string }) {
+  const fenced = text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, "$1");
+  try {
+    const parsed = JSON.parse(fenced);
+    if (typeof parsed === "object" && parsed !== null) return <pre className="result json">{JSON.stringify(parsed, null, 2)}</pre>;
+  } catch {}
+  return (
+    <div className="result md">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    </div>
+  );
+}
 
 type Detail = {
   task: {
@@ -95,7 +111,7 @@ export function TaskDetail() {
               {t.result && <CopyButton value={t.result} label="result" />}
             </div>
             {t.result ? (
-              <div className="result">{t.result}</div>
+              <Result text={t.result} />
             ) : t.status === "failed" ? (
               <p className="warn">{t.failure}</p>
             ) : (

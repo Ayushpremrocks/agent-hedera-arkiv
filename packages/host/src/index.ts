@@ -263,7 +263,9 @@ await serve(PORT, {
     if (typeof body.task !== "string" || typeof body.label !== "string" || (body.input !== undefined && typeof body.input !== "string")) throw new HttpError(400, "label, task and input must be text");
     const maxPay = tinybars(body.maxPay, "maxPay");
     const minComp = tinybars(body.minComp, "minComp");
+    if (body.provider !== undefined && !(typeof body.provider === "string" && /^0\.0\.\d+$/.test(body.provider))) throw new HttpError(400, "provider must be a Hedera account id");
     const r = await h.agent.submitTask({
+      provider: body.provider,
       task: body.task,
       input: body.input,
       label: body.label.slice(0, 100),
