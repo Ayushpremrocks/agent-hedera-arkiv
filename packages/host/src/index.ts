@@ -8,7 +8,7 @@ import { AccountCreateTransaction, Hbar, PrivateKey } from "@hiero-ledger/sdk";
 import { createAgent, type Agent, type State, type TaskEvent } from "@qy/agent/agent";
 import { Hub } from "@qy/agent/hub";
 import { ROLES } from "@qy/agent/workloads";
-import { ENV_PATH, HttpError, type LoggedEvent, arkivReader, evmKey, hederaClient, need, readEvents, runLimit, serve, trackRecord } from "@qy/shared";
+import { ENV_PATH, HttpError, MIRROR, type LoggedEvent, arkivReader, evmKey, hederaClient, need, readEvents, runLimit, serve, trackRecord } from "@qy/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -17,11 +17,12 @@ import { privateKeyToAccount } from "viem/accounts";
 import { challenge, session, useAuthSecret, verify } from "./auth.js";
 import { startEscrow } from "./escrow.js";
 import { DATA_DIR, openDb, schema } from "./db/index.js";
+import type { JobSpec } from "./db/schema.js";
 import { allowanceLeft, balanceOf, ensureFunds, sweep } from "./funding.js";
 import { agentKey, sessionKey } from "./keys.js";
 import { publishAgent, publishTask, renewAgent, updateTask, writerFor } from "./mirror.js";
 
-const { users, agents, tasks } = schema;
+const { users, agents, tasks, batches, schedules } = schema;
 const PORT = Number(process.env.HOST_PORT ?? 4100);
 const HOST_URL = process.env.HOST_URL ?? `http://localhost:${PORT}`;
 const AGENT_START_HBAR = 1; // sponsored float, so a new agent can pay its first network fees
@@ -182,16 +183,22 @@ console.log(`host: ${hosted.size} agent(s) running, ${hub.live.size} provider(s)
 /** A new agent for `owner`: an account for its derived key (auto-associates slot NFTs), Arkiv gas, public record. */
 async function createFor(owner: string) {
   const key = agentKey(MASTER, owner, 0);
-  const receipt = await (
-    await new AccountCreateTransaction()
-      .setECDSAKeyWithAlias(PrivateKey.fromStringDer(key))
-      .setInitialBalance(new Hbar(AGENT_START_HBAR))
-      .setMaxAutomaticTokenAssociations(-1)
-      .execute(operator)
-  ).getReceipt(operator);
-  const id = receipt.accountId!.toString();
-  const hash = await hostWriter.sendTransaction({ to: privateKeyToAccount(evmKey(key)).address, value: parseEther(AGENT_START_TGLM) });
-  await arkivReader().waitForTransactionReceipt({ hash });
+  // The key is derived, so the account may already exist on Hedera (e.g. the database was lost): adopt it.
+  const alias = PrivateKey.fromStringDer(key).publicKey.toEvmAddress();
+  const found = await fetch(`${MIRROR}/accounts/0x${alias}`).then((r) => (r.ok ? (r.json() as Promise<{ account?: string }>) : null));
+  let id = found?.account;
+  if (!id) {
+    const receipt = await (
+      await new AccountCreateTransaction()
+        .setECDSAKeyWithAlias(PrivateKey.fromStringDer(key))
+        .setInitialBalance(new Hbar(AGENT_START_HBAR))
+        .setMaxAutomaticTokenAssociations(-1)
+        .execute(operator)
+    ).getReceipt(operator);
+    id = receipt.accountId!.toString();
+    const hash = await hostWriter.sendTransaction({ to: privateKeyToAccount(evmKey(key)).address, value: parseEther(AGENT_START_TGLM) });
+    await arkivReader().waitForTransactionReceipt({ hash });
+  }
   await db.insert(agents).values({ id, owner, keyIndex: 0 });
   publishAgent(hostWriter, owner, id).then((k) => k && db.update(agents).set({ arkivKey: k }).where(eq(agents.id, id)));
   await run(id, owner, 0);
@@ -209,6 +216,131 @@ const tinybars = (x: unknown, name: string) => {
   return BigInt(x);
 };
 const creating = new Set<string>();
+const isAccount = (x: unknown): x is string => typeof x === "string" && /^0\.0\.\d+$/.test(x);
+const MAX_INPUT = 16_000;
+
+/** Check what every job shares, whether booked alone, in a batch or on a schedule. */
+function jobSpec(body: any): JobSpec {
+  const within = Number(body?.withinSeconds);
+  if (!Number.isInteger(within) || within < 60 || within > 86_400) throw new HttpError(400, "withinSeconds must be 60..86400");
+  if (typeof body?.task !== "string" || !body.task.trim()) throw new HttpError(400, "task must be text");
+  if (body.input !== undefined && typeof body.input !== "string") throw new HttpError(400, "input must be text");
+  if (body.provider !== undefined && !isAccount(body.provider)) throw new HttpError(400, "provider must be a Hedera account id");
+  const maxTokens = body.maxTokens === undefined ? 300 : Number(body.maxTokens);
+  if (!Number.isInteger(maxTokens) || maxTokens < 1) throw new HttpError(400, "maxTokens must be a positive integer");
+  return {
+    task: body.task.slice(0, 4000),
+    input: body.input?.slice(0, MAX_INPUT),
+    withinSeconds: within,
+    maxTokens,
+    maxPay: tinybars(body.maxPay, "maxPay").toString(),
+    minComp: tinybars(body.minComp, "minComp").toString(),
+    provider: body.provider,
+  };
+}
+
+/**
+ * Book one job for a user's agent and keep its private parts (instruction, input) and its batch or
+ * schedule with it. The booking event inserts the row asynchronously, so wait for it before updating.
+ */
+async function bookFor(agent: Agent, owner: string, spec: JobSpec, label: string, deadline: number, link: { batchId?: string; batchIndex?: number; scheduleId?: string } = {}) {
+  const r = await agent.submitTask({
+    task: spec.task,
+    input: spec.input,
+    label: label.slice(0, 100),
+    deadline,
+    maxTokens: spec.maxTokens,
+    maxPay: BigInt(spec.maxPay),
+    minComp: BigInt(spec.minComp),
+    provider: spec.provider,
+  });
+  for (let i = 0; i < 20; i++) {
+    const done = await db
+      .update(tasks)
+      .set({ task: spec.task, input: spec.input ?? "", maxPay: spec.maxPay, minComp: spec.minComp, ...link })
+      .where(and(eq(tasks.jobHash, r.jobHash), eq(tasks.owner, owner)))
+      .returning({ jobHash: tasks.jobHash });
+    if (done.length) break;
+    await new Promise((res) => setTimeout(res, 250));
+  }
+  return r;
+}
+
+/** Book a batch's items one at a time, in the background; resumes after a restart. */
+const batching = new Set<string>();
+async function runBatch(id: string) {
+  if (batching.has(id)) return;
+  batching.add(id);
+  let tries = 0;
+  try {
+    for (;;) {
+      const b = (await db.select().from(batches).where(eq(batches.id, id)))[0];
+      if (!b || b.status !== "booking") return;
+      const i = b.booked + b.failed;
+      if (i >= b.items.length) {
+        await db.update(batches).set({ status: "booked" }).where(eq(batches.id, id));
+        return;
+      }
+      const h = hosted.get(b.agentId);
+      let error: string | null = null;
+      if (!h) error = "the agent isn't running";
+      else if (now() + 30 > b.deadline) error = "the batch's deadline passed before this item could be booked";
+      else {
+        try {
+          await bookFor(h.agent, b.owner, { ...b.spec, input: b.items[i] }, `${b.label} #${i + 1}`, b.deadline, { batchId: id, batchIndex: i });
+        } catch (e) {
+          error = (e as Error).message;
+        }
+      }
+      // Nobody is watching a batch book: ride out a brief gap (no provider quoting) instead of failing the item.
+      if (error && h && ++tries < 3 && now() + 45 < b.deadline) {
+        await new Promise((res) => setTimeout(res, 10_000));
+        continue;
+      }
+      tries = 0;
+      await db
+        .update(batches)
+        .set(error ? { failed: b.failed + 1, errors: [...(b.errors ?? []), { index: i, error: error.slice(0, 300) }] } : { booked: b.booked + 1 })
+        .where(eq(batches.id, id));
+    }
+  } catch (e) {
+    console.error(`batch ${id}:`, (e as Error).message);
+  } finally {
+    batching.delete(id);
+  }
+}
+
+/**
+ * Recurring jobs. Each run's capacity is reserved ahead (providers sell reservations up to an hour out),
+ * at today's price; when the run comes, the job is attached to that reservation. Runs missed while the
+ * host was down are skipped, not piled up.
+ */
+const RESERVE_LEAD = 45 * 60;
+async function tickSchedules() {
+  for (const s of await db.select().from(schedules).where(eq(schedules.active, true))) {
+    const h = hosted.get(s.agentId);
+    if (!h) continue;
+    const t = now();
+    if (s.reservedFor !== s.nextRun && s.nextRun - t <= RESERVE_LEAD && s.nextRun - t >= 60) {
+      const r = await h.agent.reserve(s.nextRun + 20, s.spec.maxTokens, s.spec.provider).catch((e: Error) => ({ error: e.message }));
+      await db
+        .update(schedules)
+        .set({ reservedFor: s.nextRun, lastError: "error" in r ? `couldn't reserve ahead: ${r.error}` : null })
+        .where(eq(schedules.id, s.id));
+    }
+    if (t < s.nextRun) continue;
+    let lastError: string | null = null;
+    try {
+      await bookFor(h.agent, s.owner, s.spec, `${s.label} · run ${s.runsDone + 1}`, t + s.spec.withinSeconds, { scheduleId: s.id });
+    } catch (e) {
+      lastError = (e as Error).message.slice(0, 300);
+    }
+    let next = s.nextRun + s.every;
+    while (next <= t) next += s.every;
+    const runsLeft = s.runsLeft - 1;
+    await db.update(schedules).set({ runsDone: s.runsDone + 1, runsLeft, nextRun: next, active: runsLeft > 0, lastError }).where(eq(schedules.id, s.id));
+  }
+}
 
 await serve(PORT, {
   "GET /api/health": async () => ({ body: { ok: true, agents: hosted.size, providers: hub.live.size } }),
@@ -258,29 +390,94 @@ await serve(PORT, {
   "POST /api/tasks": async ({ headers, body }) => {
     const { account, h, row } = await mine(headers);
     if (!h || !row) throw new HttpError(404, "create your agent first");
-    const within = Number(body?.withinSeconds);
-    if (!Number.isInteger(within) || within < 60 || within > 86_400) throw new HttpError(400, "withinSeconds must be 60..86400");
-    if (typeof body.task !== "string" || typeof body.label !== "string" || (body.input !== undefined && typeof body.input !== "string")) throw new HttpError(400, "label, task and input must be text");
-    const maxPay = tinybars(body.maxPay, "maxPay");
-    const minComp = tinybars(body.minComp, "minComp");
-    if (body.provider !== undefined && !(typeof body.provider === "string" && /^0\.0\.\d+$/.test(body.provider))) throw new HttpError(400, "provider must be a Hedera account id");
-    const r = await h.agent.submitTask({
-      provider: body.provider,
-      task: body.task,
-      input: body.input,
-      label: body.label.slice(0, 100),
-      deadline: now() + within,
-      maxTokens: body.maxTokens === undefined ? undefined : Number(body.maxTokens),
-      maxPay,
-      minComp,
-    });
-    // The booking event already created the row; add the private parts only the user should see.
-    await db
-      .update(tasks)
-      .set({ task: body.task, input: body.input ?? "", maxPay: maxPay.toString(), minComp: minComp.toString() })
-      .where(and(eq(tasks.jobHash, r.jobHash), eq(tasks.owner, account)));
-    return { body: r };
+    if (typeof body?.label !== "string") throw new HttpError(400, "label must be text");
+    const spec = jobSpec(body);
+    return { body: await bookFor(h.agent, account, spec, body.label, now() + spec.withinSeconds) };
   },
+
+  // ---- batches: one set of instructions over many inputs, each its own job ----
+  "POST /api/batches": async ({ headers, body }) => {
+    const { account, h, row } = await mine(headers);
+    if (!h || !row) throw new HttpError(404, "create your agent first");
+    const items = body?.items;
+    if (!Array.isArray(items) || items.length < 1 || items.length > 50 || !items.every((x) => typeof x === "string" && x.length <= MAX_INPUT))
+      throw new HttpError(400, `items must be 1..50 texts of at most ${MAX_INPUT} characters`);
+    if (typeof body.label !== "string" || !body.label.trim()) throw new HttpError(400, "label must be text");
+    const spec = jobSpec({ ...body, input: undefined });
+    const id = randomBytes(8).toString("hex");
+    await db.insert(batches).values({ id, owner: account, agentId: row.id, label: body.label.slice(0, 80), spec, items, deadline: now() + spec.withinSeconds });
+    void runBatch(id);
+    return { body: { id, count: items.length } };
+  },
+  "GET /api/batches/:id": async ({ headers, params }) => {
+    const account = session(headers);
+    const b = (await db.select().from(batches).where(and(eq(batches.id, params.id), eq(batches.owner, account))))[0];
+    if (!b) throw new HttpError(404, "no such batch");
+    const runs = await db
+      .select({ jobHash: tasks.jobHash, batchIndex: tasks.batchIndex, label: tasks.label, status: tasks.status, onTime: tasks.onTime, deadline: tasks.deadline, start: tasks.start, finishedAt: tasks.finishedAt, failure: tasks.failure, price: tasks.price, result: tasks.result, createdAt: tasks.createdAt })
+      .from(tasks)
+      .where(and(eq(tasks.batchId, b.id), eq(tasks.owner, account)));
+    const { items, ...rest } = b;
+    return { body: { batch: { ...rest, total: items.length, inputs: items.map((x) => x.slice(0, 160)) }, tasks: runs } };
+  },
+  "POST /api/batches/:id/cancel": async ({ headers, params }) => {
+    const account = session(headers);
+    const r = await db
+      .update(batches)
+      .set({ status: "cancelled" })
+      .where(and(eq(batches.id, params.id), eq(batches.owner, account), eq(batches.status, "booking")))
+      .returning({ id: batches.id });
+    return { body: { cancelled: r.length > 0 } };
+  },
+
+  // ---- recurring jobs ----
+  "POST /api/schedules": async ({ headers, body }) => {
+    const { account, h, row } = await mine(headers);
+    if (!h || !row) throw new HttpError(404, "create your agent first");
+    const every = Number(body?.every);
+    const runs = Number(body?.runs);
+    const startIn = Number(body?.startIn ?? 0);
+    if (!Number.isInteger(every) || every < 300 || every > 7 * 86_400) throw new HttpError(400, "every must be 300..604800 seconds");
+    if (!Number.isInteger(runs) || runs < 1 || runs > 100) throw new HttpError(400, "runs must be 1..100");
+    if (!Number.isInteger(startIn) || startIn < 0 || startIn > 86_400) throw new HttpError(400, "startIn must be 0..86400 seconds");
+    if (typeof body.label !== "string" || !body.label.trim()) throw new HttpError(400, "label must be text");
+    const spec = jobSpec(body);
+    if (spec.withinSeconds > every) throw new HttpError(400, "each run's deadline must come before the next run starts");
+    const id = randomBytes(8).toString("hex");
+    await db.insert(schedules).values({ id, owner: account, agentId: row.id, label: body.label.slice(0, 80), spec, every, runsLeft: runs, nextRun: now() + startIn });
+    return { body: { id } };
+  },
+  "GET /api/schedules": async ({ headers }) => {
+    const account = session(headers);
+    const rows = await db.select().from(schedules).where(eq(schedules.owner, account)).orderBy(desc(schedules.createdAt));
+    return { body: { schedules: rows.map(({ spec, ...s }) => ({ ...s, task: spec.task.slice(0, 200), withinSeconds: spec.withinSeconds, maxTokens: spec.maxTokens })) } };
+  },
+  "GET /api/schedules/:id": async ({ headers, params }) => {
+    const account = session(headers);
+    const s = (await db.select().from(schedules).where(and(eq(schedules.id, params.id), eq(schedules.owner, account))))[0];
+    if (!s) throw new HttpError(404, "no such schedule");
+    const runs = await db
+      .select({ jobHash: tasks.jobHash, label: tasks.label, status: tasks.status, onTime: tasks.onTime, deadline: tasks.deadline, finishedAt: tasks.finishedAt, price: tasks.price, createdAt: tasks.createdAt })
+      .from(tasks)
+      .where(and(eq(tasks.scheduleId, s.id), eq(tasks.owner, account)))
+      .orderBy(desc(tasks.createdAt))
+      .limit(30);
+    return { body: { schedule: s, runs } };
+  },
+  "POST /api/schedules/:id": async ({ headers, params, body }) => {
+    const account = session(headers);
+    const s = (await db.select().from(schedules).where(and(eq(schedules.id, params.id), eq(schedules.owner, account))))[0];
+    if (!s) throw new HttpError(404, "no such schedule");
+    if (body?.delete === true) {
+      await db.delete(schedules).where(eq(schedules.id, s.id));
+      return { body: { deleted: true } };
+    }
+    if (typeof body?.active !== "boolean") throw new HttpError(400, "send { active: true | false } or { delete: true }");
+    if (body.active && s.runsLeft < 1) throw new HttpError(409, "this schedule has no runs left");
+    await db.update(schedules).set({ active: body.active, nextRun: body.active ? Math.max(s.nextRun, now()) : s.nextRun }).where(eq(schedules.id, s.id));
+    return { body: { active: body.active } };
+  },
+
   "GET /api/tasks": async ({ headers }) => {
     const account = session(headers);
     const rows = await db
@@ -298,6 +495,8 @@ await serve(PORT, {
         price: tasks.price,
         rushPaid: tasks.rushPaid,
         preview: sql<string | null>`left(${tasks.result}, 240)`,
+        batchId: tasks.batchId,
+        scheduleId: tasks.scheduleId,
         createdAt: tasks.createdAt,
       })
       .from(tasks)
@@ -350,6 +549,15 @@ await serve(PORT, {
 console.log(`host API on ${HOST_URL}`);
 
 hub.start((e) => console.error("hub:", e.message));
+for (const b of await db.select({ id: batches.id }).from(batches).where(eq(batches.status, "booking"))) void runBatch(b.id); // resume after a restart
+let scheduling = false;
+setInterval(() => {
+  if (scheduling) return;
+  scheduling = true;
+  tickSchedules()
+    .catch((e) => console.error("schedules:", e.message))
+    .finally(() => (scheduling = false));
+}, 15_000);
 setInterval(providerNames, 30_000);
 
 // Earnings and refunds don't sit with the agent: return them to the owner when it's idle.

@@ -24,7 +24,10 @@ export async function openDb(): Promise<{ db: Db; where: string }> {
     return { db: db as unknown as Db, where: "Postgres at DATABASE_URL" };
   }
   mkdirSync(`${DATA_DIR}/pg`, { recursive: true });
-  const db = drizzleLite(new PGlite(`${DATA_DIR}/pg`), { schema });
+  const client = new PGlite(`${DATA_DIR}/pg`);
+  // Stopping without closing can leave the files mid-write and the database unopenable: close it first.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) process.once(sig, () => void client.close().finally(() => process.exit(0)));
+  const db = drizzleLite(client, { schema });
   await migrateLite(db, { migrationsFolder });
   return { db: db as unknown as Db, where: `embedded Postgres (PGlite) in ${DATA_DIR}/pg` };
 }

@@ -79,6 +79,16 @@ export function Tasks() {
                     {t.label}
                   </Link>
                   {t.rushPaid && <span className="tag">Rushed</span>}
+                  {t.batchId && (
+                    <Link to={`/app/batches/${t.batchId}`} className="tag" viewTransition>
+                      Batch
+                    </Link>
+                  )}
+                  {t.scheduleId && (
+                    <Link to={`/app/schedules#${t.scheduleId}`} className="tag" viewTransition>
+                      Repeats
+                    </Link>
+                  )}
                   <span className="row-sub">{t.preview ?? t.failure ?? t.providerName ?? ""}</span>
                 </td>
                 <td>

@@ -443,15 +443,24 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
   }
 
   /** Buy a ticket now for a job that will come at `at`: today's price, a promise for then. */
-  async function reserveAhead(at: number, tokens: number) {
-    const p = [...hub.live.values()].filter((c) => c.maxTokens >= tokens && BigInt(c.price) <= maxBooking && (!opts.escrow || c.escrow === opts.escrow)).sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)))[0];
-    if (!p) return;
+  /**
+   * Reserve a ticket for a job that will come at `at` (optionally at one provider). Returns the booking,
+   * or an error message; the job is attached later and runs on it (see useReservation).
+   */
+  async function reserveAhead(at: number, tokens: number, provider?: string): Promise<{ provider: string; ticket: number; startBy: number; price: string } | { error: string }> {
+    const p = [...hub.live.values()]
+      .filter((c) => c.maxTokens >= tokens && BigInt(c.price) <= maxBooking && (!opts.escrow || c.escrow === opts.escrow) && (!provider || c.id === provider))
+      .sort((a, b) => Number(BigInt(a.price) - BigInt(b.price)))[0];
+    if (!p) return { error: provider ? "that provider isn't online or can't take a job this size" : "no provider online can take a job this size" };
     await fund(BigInt(p.price) * 2n);
     const res = await postPaid(`${p.bookingUrl}/reserve`, { maxTokens: tokens, notBefore: at, ...signRequest("reserve", me.id, me.key, `${tokens}@${at}`) }, payer, 3, 60_000, opts.escrow).catch((e) => ({
       status: 0,
       body: { error: e.message },
     }));
-    if (res.status !== 200) return say(`could not reserve at ${p.name}: ${res.status} ${res.body.error}`);
+    if (res.status !== 200) {
+      say(`could not reserve at ${p.name}: ${res.status} ${res.body.error}`);
+      return { error: `${res.status} ${res.body.error}` };
+    }
     hub.track(p);
     await locked(async () => {
       const key = slotKey(p.id, res.body.ticket);
@@ -462,6 +471,7 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
       save();
     });
     say(`RESERVED ${p.name} ticket #${res.body.ticket} (${tokens} tokens) for ${res.body.price} tinybars, starts ${at - now()}s from now (by ${res.body.startBy - now()}s, guaranteed)`);
+    return { provider: p.id, ticket: res.body.ticket, startBy: res.body.startBy, price: res.body.price };
   }
 
   // ---- buying: behind schedule at a provider, swap the latest slot there for an earlier one ----
@@ -818,6 +828,8 @@ export async function createAgent(opts: AgentOptions, hub: Hub) {
     },
     swap,
     submitTask,
+    /** Reserve capacity for a job that will come at `at` (used by recurring schedules). */
+    reserve: reserveAhead,
     listTasks,
     /** Jobs still open: the host waits for these before sweeping funds or stopping. */
     busy: () => open().length > 0 || Object.keys(state.slots).length > 0,

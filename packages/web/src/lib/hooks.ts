@@ -17,6 +17,8 @@ export type TaskRow = {
   price: string | null;
   rushPaid: string | null;
   preview: string | null;
+  batchId: string | null;
+  scheduleId: string | null;
   createdAt: string;
 };
 // startBy: the start providers guarantee now (or refund); runSeconds: the job's hard run limit.
