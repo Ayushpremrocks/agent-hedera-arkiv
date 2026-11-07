@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
-import { Notice } from "../components/ui";
+import { SignIn } from "../components/SignIn";
 import { hbar } from "../lib/format";
 import { H, W, startLanes } from "../lib/lanes";
 import type { LogEvent, Provider } from "../lib/market";
@@ -11,15 +11,6 @@ import { useSession } from "../lib/session";
 const now = () => Math.floor(Date.now() / 1000);
 const useProviders = () =>
   useQuery({ queryKey: ["providers"], queryFn: () => fetch("/api/market").then((r) => r.json()).then((d) => d.providers as Provider[]), refetchInterval: 15_000 });
-
-/** A label that slides out as its copy slides in: the site's one button treatment. */
-function Roll({ children }: { children: string }) {
-  return (
-    <span className="roll" data-text={children}>
-      <span>{children}</span>
-    </span>
-  );
-}
 
 /** The signature: the scheduler's promise lines, replayed live. */
 function Lanes() {
@@ -161,28 +152,16 @@ function Board() {
 }
 
 export function Landing() {
-  const { account, signIn } = useSession();
+  const { account } = useSession();
   const navigate = useNavigate();
-  const [step, setStep] = useState("");
-  const [error, setError] = useState("");
   if (account) return <Navigate to="/app" replace />;
-
-  const start = async () => {
-    setError("");
-    try {
-      await signIn(setStep);
-      navigate("/app", { viewTransition: true });
-    } catch (e) {
-      setError((e as Error).message ?? String(e));
-    } finally {
-      setStep("");
-    }
+  const cta = <SignIn primaryClass="cta" onDone={() => navigate("/app", { viewTransition: true })} />;
+  // The header and footer buttons take you to the sign-in form in the hero.
+  const start = () => {
+    const field = document.querySelector<HTMLInputElement>(".signin input");
+    field?.scrollIntoView({ block: "center" });
+    field?.focus();
   };
-  const cta = (
-    <button type="button" className="cta" onClick={start} disabled={!!step} aria-busy={!!step}>
-      <Roll>{step ? "Connecting…" : "Get started with HashPack"}</Roll>
-    </button>
-  );
 
   return (
     <div className="ql">
@@ -217,8 +196,6 @@ export function Landing() {
               and your payment waits in escrow until it does. In a hurry? Your agent buys an earlier place from one that can wait.
             </p>
             {cta}
-            <Notice text={step} />
-            <Notice text={error} kind="error" />
           </div>
         </section>
         <Lanes />

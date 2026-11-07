@@ -1,18 +1,17 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useSession } from "../lib/session";
-import { approveBudget } from "../lib/wallet";
+import { signer, useSession } from "../lib/session";
 import { ProgressButton, toast } from "./motion";
 
 const MAX = 25; // HBAR, the slider's range; the number field accepts more
 
-/** Sets the agent's budget: an HBAR allowance the user approves in HashPack. 0 cancels it. */
-export function BudgetForm({ agentId, initial = 5, label = "Approve in HashPack" }: { agentId: string; initial?: number; label?: string }) {
+/** Sets the agent's budget: an HBAR allowance the user approves (HashPack, or Magic for email sign-ins). 0 cancels it. */
+export function BudgetForm({ agentId, initial = 5, label = "Approve budget" }: { agentId: string; initial?: number; label?: string }) {
   const { account } = useSession();
   const qc = useQueryClient();
   const [amount, setAmount] = useState(initial);
   const approve = useMutation({
-    mutationFn: () => approveBudget(account!, agentId, amount),
+    mutationFn: async () => (await signer()).approveBudget(account!, agentId, amount),
     onSuccess: () => {
       toast("success", amount === 0 ? "Budget cancelled" : `Budget set to ${amount} HBAR`, "It shows here within a few seconds.");
       setTimeout(() => qc.invalidateQueries({ queryKey: ["me"] }), 5000);
@@ -44,7 +43,7 @@ export function BudgetForm({ agentId, initial = 5, label = "Approve in HashPack"
         />
       </div>
       <ProgressButton type="submit" state={approve.isPending ? "loading" : approve.isSuccess ? "done" : "idle"} doneLabel="Approved">
-        {amount === 0 ? "Cancel budget in HashPack" : label}
+        {amount === 0 ? "Cancel budget" : label}
       </ProgressButton>
     </form>
   );

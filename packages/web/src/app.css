@@ -261,3 +261,9 @@ section table td { border-bottom: 1px solid var(--rule); }
 .small { font-size: 0.8125rem; }
 .provider-link { font-weight: 700; text-decoration: none; }
 .provider-link:hover { text-decoration: underline; text-decoration-color: var(--now); text-underline-offset: 4px; }
+
+/* sign-in: email first, HashPack as the alternative */
+.signin { display: grid; gap: 8px; justify-items: stretch; max-width: 380px; }
+.signin input { font: inherit; font-size: 0.9375rem; background: var(--card); border: 1px solid var(--rule-strong); border-radius: 10px; padding: 11px 14px; color: var(--ink); }
+.signin input:focus { border-color: var(--now); box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.18); outline: none; }
+.signin-alt { justify-self: start; font-size: 0.875rem; }

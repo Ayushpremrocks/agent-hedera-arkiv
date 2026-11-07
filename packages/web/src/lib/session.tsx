@@ -1,8 +1,11 @@
-// Who's signed in, and the API client that carries their session. Sign-in: HashPack connects, the host
-// issues a one-time message, the wallet signs it, the host returns a session token.
+// Who's signed in, and the API client that carries their session. Sign-in: with email (Magic holds the
+// key) or HashPack; the host issues a one-time message, the key signs it, the host returns a session token.
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 // The wallet SDKs are large: load them only when someone signs in or out.
-const wallet = () => import("./wallet");
+const loaders = { email: () => import("./magic"), hashpack: () => import("./wallet") };
+type Via = keyof typeof loaders;
+/** The module that signs for the current user: Magic for email sign-ins, HashPack otherwise. */
+export const signer = () => loaders[(store.get("qy-via") as Via) === "email" ? "email" : "hashpack"]();
 
 const store = {
   get: (k: string) => {
@@ -28,7 +31,8 @@ export class ApiError extends Error {
 
 type Session = {
   account: string | null;
-  signIn: (onStep?: (step: string) => void) => Promise<void>;
+  /** With `email`, sign in through Magic; without, through HashPack. */
+  signIn: (onStep?: (step: string) => void, email?: string) => Promise<void>;
   signOut: () => void;
   api: <T = any>(path: string, body?: unknown) => Promise<T>;
 };
@@ -43,7 +47,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     store.set("qy-account", null);
     setToken(null);
     setAccount(null);
-    wallet().then((w) => w.disconnect());
+    signer().then((w) => w.disconnect());
+    store.set("qy-via", null);
   }, []);
 
   const api = useCallback(
@@ -62,14 +67,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const signIn = useCallback(
-    async (onStep: (step: string) => void = () => {}) => {
-      onStep("Approve the connection in HashPack…");
-      const { connect, signMessage } = await wallet();
-      const acct = await connect();
-      onStep("Sign the sign-in message in HashPack (it costs nothing)…");
+    async (onStep: (step: string) => void = () => {}, email?: string) => {
+      let acct: string;
+      let signMessage: (account: string, message: string) => Promise<string>;
+      if (email) {
+        onStep("Enter the code Magic emails you…");
+        const m = await loaders.email();
+        const publicKey = await m.login(email);
+        onStep("Setting up your Hedera account…");
+        const proof = await api<{ message: string }>("/auth/key-challenge", { publicKey });
+        acct = (await api<{ account: string }>("/auth/key-account", { publicKey, message: proof.message, signatureMap: await m.signMessage("", proof.message) })).account;
+        signMessage = m.signMessage;
+      } else {
+        onStep("Approve the connection in HashPack…");
+        const w = await loaders.hashpack();
+        acct = await w.connect();
+        signMessage = w.signMessage;
+        onStep("Sign the sign-in message in HashPack (it costs nothing)…");
+      }
       const { message } = await api<{ message: string }>("/auth/challenge", { account: acct });
       const signatureMap = await signMessage(acct, message);
       const r = await api<{ token: string; account: string }>("/auth/verify", { account: acct, message, signatureMap });
+      store.set("qy-via", email ? "email" : "hashpack");
       store.set("qy-token", r.token);
       store.set("qy-account", r.account);
       setToken(r.token);

@@ -46,7 +46,7 @@ export function Billing() {
             <h2 id="budget-h">Budget</h2>
           </div>
           <p className="muted">A new amount replaces the old one. Set it to 0 and your agent stops spending.</p>
-          <BudgetForm agentId={agent.id} label="Update in HashPack" />
+          <BudgetForm agentId={agent.id} label="Update budget" />
         </section>
         <section className="block" aria-labelledby="rules-h">
           <div className="block-head">

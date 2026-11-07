@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { challenge, session, useAuthSecret, verify } from "./auth.js";
+import { challenge, keyChallenge, session, useAuthSecret, verify, verifyKey } from "./auth.js";
 import { startEscrow } from "./escrow.js";
 import { DATA_DIR, openDb, schema } from "./db/index.js";
 import type { JobSpec } from "./db/schema.js";
@@ -27,6 +27,9 @@ const PORT = Number(process.env.HOST_PORT ?? process.env.PORT ?? 4100); // PORT:
 const HOST_URL = process.env.HOST_URL ?? `http://localhost:${PORT}`;
 const AGENT_START_HBAR = 1; // sponsored float, so a new agent can pay its first network fees
 const AGENT_START_TGLM = "0.02"; // Arkiv gas for its offers and public task records
+const NEW_USER_HBAR = 5; // testnet HBAR a new email user starts with, to pay fees and set a budget
+const NEW_ACCOUNTS_PER_HOUR = 30;
+const newAccounts: number[] = [];
 
 // The master secret derives every agent key and the session key; created on first run.
 if (!process.env.HOST_SECRET) {
@@ -311,6 +314,24 @@ await serve(PORT, {
 
   // ---- sign in ----
   "POST /api/auth/challenge": async ({ body }) => ({ body: challenge(body?.account) }),
+  // Email sign-in (Magic): prove the key, get the Hedera account for it (created and funded once if new).
+  "POST /api/auth/key-challenge": async ({ body }) => ({ body: keyChallenge(body?.publicKey) }),
+  "POST /api/auth/key-account": async ({ body }) => {
+    const key = verifyKey(body);
+    const found = await fetch(`${MIRROR}/accounts?account.publickey=${key.toStringRaw()}&limit=1`).then((r) => (r.ok ? (r.json() as Promise<any>) : null));
+    let account: string | undefined = found?.accounts?.[0]?.account;
+    if (!account) {
+      // shortcut: in-memory hourly cap on new funded accounts; a real deployment needs per-email limits.
+      if (newAccounts.filter((t) => t > now() - 3600).length >= NEW_ACCOUNTS_PER_HOUR) throw new HttpError(429, "too many new accounts this hour; try again later");
+      newAccounts.push(now());
+      const receipt = await (await new AccountCreateTransaction().setKeyWithoutAlias(key).setInitialBalance(new Hbar(NEW_USER_HBAR)).execute(operator)).getReceipt(operator);
+      account = receipt.accountId!.toString();
+      // /auth/verify reads the key from the Mirror Node, which lags consensus by a few seconds
+      for (let i = 0; i < 20 && !(await fetch(`${MIRROR}/accounts/${account}`)).ok; i++) await new Promise((r) => setTimeout(r, 1000));
+      console.log(`created user account ${account} for an email sign-in`);
+    }
+    return { body: { account } };
+  },
   "POST /api/auth/verify": async ({ body }) => {
     const r = await verify(body);
     await db.insert(users).values({ account: r.account }).onConflictDoUpdate({ target: users.account, set: { lastSeenAt: new Date() } });

@@ -1,9 +1,9 @@
 import { ArrowSquareOut, GearSix, Globe, ListChecks, Plus, Repeat, SignOut, SquaresFour, Wallet } from "@phosphor-icons/react";
-import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { hbar } from "../lib/format";
 import { useMe, useTasks } from "../lib/hooks";
 import { useSession } from "../lib/session";
+import { SignIn } from "./SignIn";
 import { Notice } from "./ui";
 
 const NAV = [
@@ -50,23 +50,10 @@ function AgentCard() {
 }
 
 export function AppShell() {
-  const { account, signIn } = useSession();
+  const { account } = useSession();
   const me = useMe();
   const { pathname } = useLocation();
-  const [step, setStep] = useState("");
-  const [error, setError] = useState("");
   const active = section(pathname);
-
-  const connect = async () => {
-    setError("");
-    try {
-      await signIn(setStep);
-    } catch (e) {
-      setError((e as Error).message ?? String(e));
-    } finally {
-      setStep("");
-    }
-  };
 
   return (
     <div className="app">
@@ -100,15 +87,11 @@ export function AppShell() {
         ) : (
           <div className="rail-agent">
             <p className="rail-pitch">Sign in to hand your agent tasks with deadlines.</p>
-            <button type="button" className="btn btn-primary" onClick={connect} disabled={!!step}>
-              {step ? "Connecting…" : "Sign in with HashPack"}
-            </button>
+            <SignIn />
           </div>
         )}
       </aside>
       <main id="main" className="app-main">
-        <Notice text={step} />
-        <Notice text={error} kind="error" />
         {me.data?.mirrorDown && <Notice text="Hedera's Mirror Node isn't answering, so balances can't be shown right now. Your tasks keep running." />}
         <Outlet />
         <footer className="app-foot">

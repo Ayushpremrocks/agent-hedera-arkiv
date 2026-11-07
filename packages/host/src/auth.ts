@@ -39,6 +39,42 @@ export async function verify(body: any) {
   const c = challenges.get(String(body?.message ?? ""));
   if (!c || c.expires < now() || c.account !== body?.account) throw new HttpError(401, "unknown or expired sign-in message; request a new one");
   challenges.delete(body.message); // one use only
+  if (!(await publicKeyOf(c.account)).verify(signedBytes(body.message), signatureOf(body))) throw new HttpError(401, "signature does not match the account's key");
+  const payload = `${c.account}.${now() + SESSION_SECONDS}`;
+  return { token: `${payload}.${mac(payload)}`, account: c.account };
+}
+
+/**
+ * Email sign-in (Magic) starts with a key, not an account: prove you hold the key, then the host finds
+ * or creates the account for it. Same one-time message and signature format as a wallet sign-in.
+ */
+export function keyChallenge(publicKey: unknown) {
+  const key = parseKey(publicKey);
+  const message = `Create a Dani.ai account\nkey: ${key.toStringDer()}\nnonce: ${randomBytes(12).toString("hex")}\nexpires: ${now() + CHALLENGE_SECONDS}`;
+  challenges.set(message, { account: `key:${key.toStringDer()}`, expires: now() + CHALLENGE_SECONDS });
+  return { message };
+}
+
+export function verifyKey(body: any): PublicKey {
+  const key = parseKey(body?.publicKey);
+  const c = challenges.get(String(body?.message ?? ""));
+  if (!c || c.expires < now() || c.account !== `key:${key.toStringDer()}`) throw new HttpError(401, "unknown or expired message; request a new one");
+  challenges.delete(body.message);
+  if (!key.verify(signedBytes(body.message), signatureOf(body))) throw new HttpError(401, "signature does not match the key");
+  return key;
+}
+
+function parseKey(k: unknown): PublicKey {
+  try {
+    return PublicKey.fromString(String(k));
+  } catch {
+    throw new HttpError(400, "publicKey must be a Hedera public key");
+  }
+}
+
+const signedBytes = (message: string) => Buffer.from("\x19Hedera Signed Message:\n" + message.length + message);
+
+function signatureOf(body: any): Uint8Array {
   let sig: Uint8Array | null | undefined;
   try {
     const map = proto.SignatureMap.decode(Buffer.from(String(body.signatureMap), "base64"));
@@ -47,10 +83,7 @@ export async function verify(body: any) {
     throw new HttpError(400, "signatureMap must be a base64 SignatureMap");
   }
   if (!sig) throw new HttpError(400, "no signature in signatureMap");
-  const signed = Buffer.from("\x19Hedera Signed Message:\n" + body.message.length + body.message);
-  if (!(await publicKeyOf(c.account)).verify(signed, sig)) throw new HttpError(401, "signature does not match the account's key");
-  const payload = `${c.account}.${now() + SESSION_SECONDS}`;
-  return { token: `${payload}.${mac(payload)}`, account: c.account };
+  return sig;
 }
 
 /** The account a request's bearer token belongs to, or a 401. */
