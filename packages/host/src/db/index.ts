@@ -18,6 +18,7 @@ const migrationsFolder = fileURLToPath(new URL("../../drizzle", import.meta.url)
 export type Db = PgDatabase<any, typeof schema>;
 
 export async function openDb(): Promise<{ db: Db; where: string }> {
+  mkdirSync(DATA_DIR, { recursive: true }); // the escrow and the hub keep files here even when Postgres holds the rest
   if (process.env.DATABASE_URL) {
     const db = drizzlePg(new pg.Pool({ connectionString: process.env.DATABASE_URL }), { schema });
     await migratePg(db, { migrationsFolder });
