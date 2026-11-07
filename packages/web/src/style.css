@@ -3,8 +3,8 @@
    --card a raised surface, --ink the main text. */
 :root {
   color-scheme: dark;
-  --paper: #0b0d10;
-  --card: #12161b;
+  --paper: #0a0a0b;
+  --card: #111113;
   --sheet: #191e24;
   --ink: #e8ecf0;
   --ink-2: #9aa4af;
@@ -19,7 +19,7 @@
   --ok-fg: #6fd8b5;
   --radius: 10px;
   --ease: cubic-bezier(0.2, 0.7, 0, 1);
-  font-family: "Archivo", system-ui, sans-serif;
+  font-family: "Geist", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.5;
   color: var(--ink);

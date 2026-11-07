@@ -1,0 +1,27 @@
+/* One CSS entry. The older hand-written CSS sits in a "legacy" layer so Tailwind utilities always win over it.
+   No Tailwind preflight: the app pages still rely on the legacy base styles. */
+@layer theme, legacy, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "./style.css" layer(legacy);
+@import "./polish.css" layer(legacy);
+@import "./landing.css" layer(legacy);
+@import "./app.css" layer(legacy);
+@import "./composer.css" layer(legacy);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* The theme: near-black ground, one amber accent for "now" and promises, green for kept, coral for refunds. */
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", monospace;
+  --color-bg: #0a0a0b;
+  --color-card: #111113;
+  --color-raised: #18181b;
+  --color-fg: #ededef;
+  --color-muted: #8f8f99;
+  --color-faint: #5d5d66;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-accent: #ffb000;
+  --color-kept: #57c9a4;
+  --color-refund: #ff8a6b;
+  --ease-out-soft: cubic-bezier(0.23, 1, 0.32, 1);
+}

@@ -4,7 +4,7 @@
 //
 //   pnpm host     HOST_URL=http://<lan-ip>:4100 lets agents on other machines reach the ones here;
 //                 DATABASE_URL=postgres://... uses a Postgres server instead of the embedded one.
-import { AccountCreateTransaction, Hbar, PrivateKey } from "@hiero-ledger/sdk";
+import { AccountCreateTransaction, Hbar, PrivateKey, TransferTransaction } from "@hiero-ledger/sdk";
 import { createAgent, type Agent, type State, type TaskEvent } from "@qy/agent/agent";
 import { Hub } from "@qy/agent/hub";
 import { ROLES } from "@qy/agent/workloads";
@@ -30,6 +30,7 @@ const AGENT_START_TGLM = "0.02"; // Arkiv gas for its offers and public task rec
 const NEW_USER_HBAR = 5; // testnet HBAR a new email user starts with, to pay fees and set a budget
 const NEW_ACCOUNTS_PER_HOUR = 30;
 const newAccounts: number[] = [];
+const toppedUp = new Set<string>(); // shortcut: forgotten on restart, so an empty account can be topped up once per restart
 
 // The master secret derives every agent key and the session key; created on first run.
 if (!process.env.HOST_SECRET) {
@@ -43,7 +44,8 @@ useAuthSecret(sessionKey(MASTER));
 const { db, where } = await openDb();
 console.log(`database: ${where}`);
 const operatorKey = need("HEDERA_OPERATOR_KEY");
-const operator = hederaClient(need("HEDERA_OPERATOR_ID"), operatorKey);
+const operatorId = need("HEDERA_OPERATOR_ID");
+const operator = hederaClient(operatorId, operatorKey);
 const hostWriter = writerFor(operatorKey); // the host's identity on Arkiv
 const names: Record<string, string> = {};
 const hub = new Hub(`${DATA_DIR}/hub.json`);
@@ -320,10 +322,20 @@ await serve(PORT, {
     const key = verifyKey(body);
     const found = await fetch(`${MIRROR}/accounts?account.publickey=${key.toStringRaw()}&limit=1`).then((r) => (r.ok ? (r.json() as Promise<any>) : null));
     let account: string | undefined = found?.accounts?.[0]?.account;
-    if (!account) {
-      // shortcut: in-memory hourly cap on new funded accounts; a real deployment needs per-email limits.
+    // shortcut: in-memory hourly cap on funded accounts (new or topped up); a real deployment needs per-email limits.
+    const allowance = () => {
       if (newAccounts.filter((t) => t > now() - 3600).length >= NEW_ACCOUNTS_PER_HOUR) throw new HttpError(429, "too many new accounts this hour; try again later");
       newAccounts.push(now());
+    };
+    // Magic may already have made an account for this key, with no HBAR: fund it once, like a new one.
+    if (account && BigInt(found.accounts[0].balance?.balance ?? 0) < 100_000_000n && !toppedUp.has(account)) {
+      allowance();
+      toppedUp.add(account);
+      await (await new TransferTransaction().addHbarTransfer(operatorId, new Hbar(-NEW_USER_HBAR)).addHbarTransfer(account, new Hbar(NEW_USER_HBAR)).execute(operator)).getReceipt(operator);
+      console.log(`funded email user ${account} with ${NEW_USER_HBAR} HBAR`);
+    }
+    if (!account) {
+      allowance();
       const receipt = await (await new AccountCreateTransaction().setKeyWithoutAlias(key).setInitialBalance(new Hbar(NEW_USER_HBAR)).execute(operator)).getReceipt(operator);
       account = receipt.accountId!.toString();
       // /auth/verify reads the key from the Mirror Node, which lags consensus by a few seconds
